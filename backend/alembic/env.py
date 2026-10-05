@@ -7,7 +7,7 @@ from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
-# 1. Add backend directory to sys.path FIRST so app imports resolve correctly
+# 1. Add backend directory to sys.path FIRST so app imports resolve
 BACKEND_DIR = dirname(dirname(abspath(__file__)))
 sys.path.insert(0, BACKEND_DIR)
 
@@ -15,14 +15,14 @@ sys.path.insert(0, BACKEND_DIR)
 env_path = join(BACKEND_DIR, ".env")
 load_dotenv(dotenv_path=env_path)
 
-# 3. Import Base AND your models so Base.metadata is fully populated
+# 3. App imports
+import app.models  # noqa: F401
 from app.core.database import Base
-import app.models  # Registers User, Device, Session, RiskLog, etc.
 
-# 4. Alembic Config object
+# Alembic Config object
 config = context.config
 
-# Dynamically set the database URL from .env
+# Dynamically set database URL from .env
 db_url = os.getenv("DIRECT_URL") or os.getenv("DATABASE_URL")
 
 if not db_url:
@@ -33,11 +33,10 @@ if not db_url:
 
 config.set_main_option("sqlalchemy.url", db_url)
 
-# Interpret the config file for Python logging
+# Interpret config file for Python logging
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Set target_metadata for autogenerate support
 target_metadata = Base.metadata
 
 
