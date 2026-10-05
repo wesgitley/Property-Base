@@ -7,6 +7,11 @@ from alembic import context
 from dotenv import load_dotenv
 from sqlalchemy import engine_from_config, pool
 
+from app.core.database import Base
+import app.models  # Registers the SQLAlchemy models with Base.metadata
+
+target_metadata = Base.metadata
+
 # Get backend directory path and add to sys.path so app imports work
 BACKEND_DIR = dirname(dirname(abspath(__file__)))
 sys.path.insert(0, BACKEND_DIR)

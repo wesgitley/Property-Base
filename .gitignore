@@ -1,0 +1,27 @@
+﻿# Python & Virtual Environments
+__pycache__/
+*.py[cod]
+venv/
+.venv/
+env/
+
+# Data & Large ML Checkpoints
+*.pt
+*.pth
+*.csv
+*.json
+data/
+datasets/
+
+# Frontend (React)
+node_modules/
+build/
+dist/
+
+# Environment Variables & Secrets
+.env
+.env.local
+
+# Database files
+*.sqlite3
+*.db
