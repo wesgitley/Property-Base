@@ -1,18 +1,22 @@
-import uuid
 import enum
+import uuid
 from datetime import datetime, timezone
+
 from sqlalchemy import (
-    Column,
-    String,
-    Boolean,
-    ForeignKey,
-    DateTime,
     BigInteger,
-    Numeric,
-    Enum as SQLEnum,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
     Index,
+    Numeric,
+    String,
 )
-from sqlalchemy.dialects.postgresql import UUID, INET
+from sqlalchemy import (
+    Enum as SQLEnum,
+)
+from sqlalchemy.dialects.postgresql import INET, UUID
+
 from app.core.database import Base
 
 
