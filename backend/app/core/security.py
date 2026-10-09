@@ -1,33 +1,52 @@
+import secrets
+import uuid
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional, Tuple
 
+import bcrypt
 import jwt
-from passlib.context import CryptContext
 
-SECRET_KEY = "CHANGE_THIS_TO_A_SECURE_SECRET_KEY_IN_ENV"
+# NFR-03: Session tokens expire after 30 minutes of inactivity
+SECRET_KEY = "propertybase-moe-ato-production-secret-key-salt"
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60
-
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return pwd_context.verify(plain_password, hashed_password)
+    try:
+        return bcrypt.checkpw(
+            plain_password.encode("utf-8")[:72],
+            hashed_password.encode("utf-8"),
+        )
+    except Exception:
+        return False
 
 
 def get_password_hash(password: str) -> str:
-    return pwd_context.hash(password)
+    salt = bcrypt.gensalt()
+    return bcrypt.hashpw(password.encode("utf-8")[:72], salt).decode("utf-8")
 
 
 def create_access_token(
-    subject: str | Any, expires_delta: timedelta | None = None
-) -> str:
+    subject: str | Any,
+    session_id: Optional[str] = None,
+    role: str = "SELLER",
+    expires_delta: Optional[timedelta] = None,
+) -> Tuple[str, str]:
+    now = datetime.now(timezone.utc)
     if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
+        expire = now + expires_delta
     else:
-        expire = datetime.now(timezone.utc) + timedelta(
-            minutes=ACCESS_TOKEN_EXPIRE_MINUTES
-        )
+        expire = now + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
 
-    to_encode = {"exp": expire, "sub": str(subject)}
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    jti = secrets.token_hex(16)
+    to_encode = {
+        "sub": str(subject),
+        "session_id": str(session_id) if session_id else None,
+        "role": role,
+        "jti": jti,
+        "iat": now.timestamp(),
+        "exp": expire.timestamp(),
+    }
+    encoded = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+    return encoded, jti
