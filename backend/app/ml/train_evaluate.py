@@ -14,7 +14,7 @@ from sklearn.metrics import (
 )
 from sklearn.model_selection import train_test_split
 
-from app.ml.dataset import generate_synthetic_ato_dataset
+from app.ml.dataset import load_real_ato_dataset
 from app.ml.moe_architecture import LateFusionNetwork
 
 
@@ -29,8 +29,8 @@ def train_and_evaluate_model(
     print("=" * 60)
 
     # 1. Dataset Generation & Stratified Split (DR-06)
-    print("Generating telemetry dataset (5,000 samples)...")
-    X_b, X_c, X_d, y, feature_names = generate_synthetic_ato_dataset(n_samples=5000, fraud_ratio=0.25, random_state=42)
+    print("Loading real telemetry datasets from CSV files...")
+    X_b, X_c, X_d, y, feature_names = load_real_ato_dataset()
 
     # 80% train, 20% temp
     indices = np.arange(len(y))
