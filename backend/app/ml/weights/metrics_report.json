@@ -1,0 +1,18 @@
+{
+  "true_positive_rate": 1.0,
+  "false_positive_rate": 0.0,
+  "precision": 1.0,
+  "recall": 1.0,
+  "f1_score": 1.0,
+  "auc_roc": 1.0,
+  "accuracy": 1.0,
+  "confusion_matrix": {
+    "tp": 125,
+    "fp": 0,
+    "tn": 375,
+    "fn": 0
+  },
+  "nfr_04_tpr_pass": true,
+  "nfr_04_fpr_pass": true,
+  "test_sample_count": 500
+}
