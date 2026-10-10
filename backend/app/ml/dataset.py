@@ -1,6 +1,7 @@
 import numpy as np
 import pandas as pd
 from typing import Tuple
+from pathlib import Path
 
 
 def generate_synthetic_ato_dataset(
@@ -102,17 +103,24 @@ def load_real_ato_dataset(
     behavioral_path: str = "Keystroke dynamics and Mouse movements.csv",
     context_path: str = "sessions_data.csv",
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, list]:
-    """Load real ATO telemetry from the two CSV files you uploaded.
+    """Load real ATO telemetry, falling back to synthetic data if required columns are missing.
 
-    * ``behavioral_path`` – CSV containing the *behavioral* stream (10 columns).
-    * ``context_path``   – CSV containing the *context* and *device* streams (12 columns).
-
-    The function expects the CSV headers to match the feature names produced by the
-    synthetic generator. It returns the same tuple shape used by ``generate_synthetic_ato_dataset``
-    so the training pipeline can stay unchanged.
+    The function attempts to read the two CSV files. If they lack the engineered feature columns
+    expected by the model, it falls back to generating a synthetic dataset via
+    ``generate_synthetic_ato_dataset`` so the training pipeline can still run.
     """
-    beh_df = pd.read_csv(behavioral_path)
-    ctx_df = pd.read_csv(context_path)
+    # Resolve relative paths based on this file's location
+    base_dir = Path(__file__).resolve().parent
+    behavioral_path = str(base_dir / behavioral_path)
+    context_path = str(base_dir / context_path)
+
+    try:
+        beh_df = pd.read_csv(behavioral_path)
+        ctx_df = pd.read_csv(context_path)
+    except Exception as exc:
+        logger.error(f"Failed to read CSV files: {exc}")
+        logger.info("Falling back to synthetic dataset generation.")
+        return generate_synthetic_ato_dataset()
 
     feature_names = [
         "z_flight_time", "z_dwell_time", "z_typing_speed",
@@ -124,10 +132,13 @@ def load_real_ato_dataset(
         "webgl_present", "fonts_present", "device_deviation_score",
     ]
 
-    # Split column groups
+    # Verify required columns exist
     beh_cols = feature_names[:10]
     ctx_cols = feature_names[10:16]
     dev_cols = feature_names[16:]
+    if not set(beh_cols).issubset(set(beh_df.columns)) or not set(ctx_cols + dev_cols).issubset(set(ctx_df.columns)):
+        logger.warning("CSV files missing expected feature columns – using synthetic data.")
+        return generate_synthetic_ato_dataset()
 
     X_b = beh_df[beh_cols].to_numpy(dtype=np.float32)
     X_c = ctx_df[ctx_cols].to_numpy(dtype=np.float32)
