@@ -2,8 +2,8 @@ import numpy as np
 import pandas as pd
 from typing import Tuple
 from pathlib import Path
-
-
+import logging
+logger = logging.getLogger(__name__)
 def generate_synthetic_ato_dataset(
     n_samples: int = 5000,
     fraud_ratio: float = 0.25,
