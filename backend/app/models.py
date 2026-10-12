@@ -104,7 +104,7 @@ class User(Base):
     behavior_baseline = relationship("UserBehaviorBaseline", back_populates="user", uselist=False, cascade="all, delete-orphan")
     risk_logs = relationship("RiskLog", back_populates="user", cascade="all, delete-orphan")
     mfa_challenges = relationship("MFAChallenge", back_populates="user", cascade="all, delete-orphan")
-    properties = relationship("PropertyListing", back_populates="seller", cascade="all, delete-orphan")
+    seller_profile = relationship("PropertySeller", back_populates="user", uselist=False, cascade="all, delete-orphan")
 
 
 class UserDevice(Base):
@@ -321,20 +321,55 @@ class AdminOverride(Base):
     admin = relationship("User")
 
 
+class PropertySeller(Base):
+    """Seller profile — one per user, linked to property_sellers table in Supabase."""
+    __tablename__ = "property_sellers"
+
+    seller_id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        GUID(),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    full_name = Column(String(255), nullable=False)
+    phone_number = Column(String(30), nullable=False)
+    agency_name = Column(String(255), nullable=True)
+    city = Column(String(100), nullable=False)
+    bio = Column(Text, nullable=True)
+    is_verified = Column(Boolean, nullable=False, default=False)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    user = relationship("User", back_populates="seller_profile")
+    listings = relationship("PropertyListing", back_populates="seller", cascade="all, delete-orphan")
+
+
 class PropertyListing(Base):
+    """A property listing posted by a seller."""
     __tablename__ = "property_listings"
 
     property_id = Column(GUID(), primary_key=True, default=uuid.uuid4)
     seller_id = Column(
         GUID(),
-        ForeignKey("users.user_id", ondelete="CASCADE"),
+        ForeignKey("property_sellers.seller_id", ondelete="CASCADE"),
         nullable=False,
         index=True,
     )
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=False)
     price = Column(Float, nullable=False)
-    property_type = Column(String(100), nullable=False, default="Apartment")  # Apartment, Villa, House, Office
+    property_type = Column(String(100), nullable=False, default="Apartment")
     location = Column(String(255), nullable=False)
     bedrooms = Column(Integer, nullable=False, default=2)
     bathrooms = Column(Integer, nullable=False, default=2)
@@ -353,4 +388,5 @@ class PropertyListing(Base):
         onupdate=lambda: datetime.now(timezone.utc),
     )
 
-    seller = relationship("User", back_populates="properties")
+    seller = relationship("PropertySeller", back_populates="listings")
+
