@@ -213,6 +213,38 @@ class ModelMetricsResponse(BaseModel):
 
 # --- Real Estate Property Schemas ---
 
+class PropertySellerCreate(BaseModel):
+    full_name: str
+    phone_number: str
+    agency_name: Optional[str] = None
+    city: str
+    bio: Optional[str] = None
+
+
+class PropertySellerUpdate(BaseModel):
+    full_name: Optional[str] = None
+    phone_number: Optional[str] = None
+    agency_name: Optional[str] = None
+    city: Optional[str] = None
+    bio: Optional[str] = None
+
+
+class PropertySellerResponse(BaseModel):
+    seller_id: uuid.UUID
+    user_id: uuid.UUID
+    full_name: str
+    phone_number: str
+    agency_name: Optional[str]
+    city: str
+    bio: Optional[str]
+    is_verified: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
 class PropertyCreate(BaseModel):
     title: str
     description: str
@@ -256,3 +288,4 @@ class PropertyResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
