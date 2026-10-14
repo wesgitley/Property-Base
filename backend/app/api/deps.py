@@ -64,7 +64,10 @@ def get_current_user(
             now = datetime.now(timezone.utc)
             # Inactivity check
             if user_session.last_activity_at:
-                inactivity_delta = now - user_session.last_activity_at
+                last_act = user_session.last_activity_at
+                if last_act.tzinfo is None:
+                    last_act = last_act.replace(tzinfo=timezone.utc)
+                inactivity_delta = now - last_act
                 if inactivity_delta > timedelta(minutes=30):
                     user_session.status = SessionStatus.EXPIRED
                     db.commit()

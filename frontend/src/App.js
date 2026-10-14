@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import AdminDashboard from './AdminDashboard';
 import {
   ShieldCheck,
   Mail,
@@ -349,6 +350,96 @@ export default function App() {
     setActiveTab('login');
     setStatusMessage({ type: 'success', text: 'You have signed out safely.' });
   };
+
+  const renderBackupModal = () => {
+    if (!showBackupCodesModal) return null;
+    return (
+      <div style={styles.modalOverlay}>
+        <div style={styles.modalBox}>
+          <div style={styles.modalHeader}>
+            <div style={styles.modalIconBox}>
+              <ShieldCheck size={28} color="#4F46E5" />
+            </div>
+            <h3 style={styles.modalTitle}>
+              {modalMode === 'refill'
+                ? 'Backup Codes Auto-Refilled!'
+                : 'Save Your Backup Recovery Codes'}
+            </h3>
+            <p style={styles.modalSubtitle}>
+              {modalMode === 'refill'
+                ? 'All previous codes were exhausted. A fresh set of 8 single-use backup recovery codes has been generated for your account. Please save them now!'
+                : 'These 8 single-use codes allow you to sign in via two-factor authentication. Store them securely now—they will never be shown again!'}
+            </p>
+          </div>
+
+          <div style={styles.codesGrid}>
+            {generatedCodes.map((code, idx) => (
+              <div key={idx} style={styles.codePill}>
+                <span style={styles.codeIdx}>{idx + 1}.</span>
+                <span style={styles.codeText}>{code}</span>
+              </div>
+            ))}
+          </div>
+
+          <div style={styles.modalActions}>
+            <button
+              type="button"
+              onClick={copyCodesToClipboard}
+              style={styles.modalSecondaryBtn}
+            >
+              <Copy size={16} />
+              <span>{copiedCodes ? 'Copied to Clipboard!' : 'Copy Codes'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={downloadCodesFile}
+              style={styles.modalSecondaryBtn}
+            >
+              <Download size={16} />
+              <span>Download .txt</span>
+            </button>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => {
+              setShowBackupCodesModal(false);
+              if (modalMode === 'register') {
+                setActiveTab('login');
+                setStatusMessage({
+                  type: 'success',
+                  text: 'Account created! Enter your credentials to sign in.',
+                });
+              } else {
+                setStatusMessage({
+                  type: 'success',
+                  text: 'Your fresh backup codes have been activated and saved!',
+                });
+              }
+            }}
+            style={styles.modalPrimaryBtn}
+          >
+            I HAVE SAVED MY CODES <ArrowRight size={16} />
+          </button>
+        </div>
+      </div>
+    );
+  };
+
+  // ── 6. ADMIN VIEW BRANCHING (ATO FRAUD DETECTION & SOC CONTROL ROOM) ───────
+  if (authenticatedUser && authenticatedUser.role === 'ADMIN') {
+    return (
+      <>
+        <AdminDashboard
+          user={authenticatedUser}
+          token={accessToken}
+          onLogout={handleLogout}
+        />
+        {renderBackupModal()}
+      </>
+    );
+  }
 
   return (
     <div style={styles.outerContainer}>
@@ -871,78 +962,7 @@ export default function App() {
       </div>
 
       {/* ──────────────── BACKUP CODES POPUP MODAL ──────────────── */}
-      {showBackupCodesModal && (
-        <div style={styles.modalOverlay}>
-          <div style={styles.modalBox}>
-            <div style={styles.modalHeader}>
-              <div style={styles.modalIconBox}>
-                <ShieldCheck size={28} color="#4F46E5" />
-              </div>
-              <h3 style={styles.modalTitle}>
-                {modalMode === 'refill'
-                  ? 'Backup Codes Auto-Refilled!'
-                  : 'Save Your Backup Recovery Codes'}
-              </h3>
-              <p style={styles.modalSubtitle}>
-                {modalMode === 'refill'
-                  ? 'All previous codes were exhausted. A fresh set of 8 single-use backup recovery codes has been generated for your account. Please save them now!'
-                  : 'These 8 single-use codes allow you to sign in via two-factor authentication. Store them securely now—they will never be shown again!'}
-              </p>
-            </div>
-
-            <div style={styles.codesGrid}>
-              {generatedCodes.map((code, idx) => (
-                <div key={idx} style={styles.codePill}>
-                  <span style={styles.codeIdx}>{idx + 1}.</span>
-                  <span style={styles.codeText}>{code}</span>
-                </div>
-              ))}
-            </div>
-
-            <div style={styles.modalActions}>
-              <button
-                type="button"
-                onClick={copyCodesToClipboard}
-                style={styles.modalSecondaryBtn}
-              >
-                <Copy size={16} />
-                <span>{copiedCodes ? 'Copied to Clipboard!' : 'Copy Codes'}</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={downloadCodesFile}
-                style={styles.modalSecondaryBtn}
-              >
-                <Download size={16} />
-                <span>Download .txt</span>
-              </button>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => {
-                setShowBackupCodesModal(false);
-                if (modalMode === 'register') {
-                  setActiveTab('login');
-                  setStatusMessage({
-                    type: 'success',
-                    text: 'Account created! Enter your credentials to sign in.',
-                  });
-                } else {
-                  setStatusMessage({
-                    type: 'success',
-                    text: 'Your fresh backup codes have been activated and saved!',
-                  });
-                }
-              }}
-              style={styles.modalPrimaryBtn}
-            >
-              I HAVE SAVED MY CODES <ArrowRight size={16} />
-            </button>
-          </div>
-        </div>
-      )}
+      {renderBackupModal()}
     </div>
   );
 }
