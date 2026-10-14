@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import AdminDashboard from './AdminDashboard';
+import SellerDashboard from './SellerDashboard';
 import {
   ShieldCheck,
   Mail,
@@ -441,6 +442,28 @@ export default function App() {
     );
   }
 
+  // ── 7. SELLER DASHBOARD VIEW (WHEN AUTHENTICATED OR PREVIEWING) ────────────
+  if (authenticatedUser && authenticatedUser.role !== 'ADMIN') {
+    return (
+      <>
+        <SellerDashboard
+          user={authenticatedUser}
+          onLogout={handleLogout}
+        />
+        {renderBackupModal()}
+      </>
+    );
+  }
+
+  if (activeTab === 'seller_preview') {
+    return (
+      <SellerDashboard
+        user={{ first_name: 'Wesley', last_name: 'Mutisya', email: 'seller@propertybase.com', role: 'SELLER' }}
+        onLogout={() => setActiveTab('login')}
+      />
+    );
+  }
+
   return (
     <div style={styles.outerContainer}>
       <div style={styles.cardWrapper}>
@@ -501,6 +524,13 @@ export default function App() {
                 style={activeTab === 'mfa' ? styles.tabActive : styles.tabInactive}
               >
                 MFA Verify
+              </button>
+              <button
+                type="button"
+                onClick={() => { setActiveTab('seller_preview'); clearMessages(); }}
+                style={activeTab === 'seller_preview' ? styles.tabActive : styles.tabInactive}
+              >
+                Seller Dashboard
               </button>
             </div>
           )}
