@@ -1,6 +1,6 @@
 import uuid
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel, EmailStr, Field
 
 from app.models import (
@@ -218,7 +218,7 @@ class VerifyRecoveryLink(BaseModel):
 # --- Admin Schemas ---
 
 class FlaggedSessionItem(BaseModel):
-    risk_id: uuid.UUID
+    risk_id: Union[uuid.UUID, int, str]
     user_id: uuid.UUID
     email: str
     session_id: Optional[uuid.UUID] = None
@@ -240,15 +240,15 @@ class FlaggedSessionItem(BaseModel):
 
 
 class AdminOverrideRequest(BaseModel):
-    risk_log_id: uuid.UUID
+    risk_log_id: Union[uuid.UUID, int, str]
     action_taken: OverrideAction
     reason: str
     new_risk_score: Optional[float] = None
 
 
 class AdminOverrideResponse(BaseModel):
-    override_id: uuid.UUID
-    risk_log_id: uuid.UUID
+    override_id: Union[uuid.UUID, int, str]
+    risk_log_id: Union[uuid.UUID, int, str]
     admin_id: uuid.UUID
     action_taken: OverrideAction
     reason: str
