@@ -129,6 +129,7 @@ class TokenResponse(BaseModel):
     challenge_required: Optional[bool] = False
     mfa_channel: Optional[MFAChannel] = None
     lock_message: Optional[str] = None
+    new_backup_codes: Optional[List[str]] = None
 
 
 # --- MFA & Recovery Schemas ---
@@ -149,6 +150,7 @@ class LoginStep1Response(BaseModel):
     message: str = "Credentials verified. MFA verification required."
     user_id: uuid.UUID
     email: EmailStr
+    backup_codes_depleted: Optional[bool] = False
 
 
 class MFABackupCodeVerifyRequest(BaseModel):
@@ -156,6 +158,18 @@ class MFABackupCodeVerifyRequest(BaseModel):
     backup_code: str
     device_hash: Optional[str] = "browser_default_hash"
     device_name: Optional[str] = "Standard Browser"
+
+
+class SendEmailOTPRequest(BaseModel):
+    mfa_pre_auth_token: str
+
+
+class VerifyEmailOTPRequest(BaseModel):
+    mfa_pre_auth_token: str
+    otp_code: str
+    device_hash: Optional[str] = "browser_default_hash"
+    device_name: Optional[str] = "Standard Browser"
+
 
 
 class ForgotPasswordRequest(BaseModel):

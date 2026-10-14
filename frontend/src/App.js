@@ -40,11 +40,15 @@ export default function App() {
   const [preAuthToken, setPreAuthToken] = useState('');
   const [mfaEmail, setMfaEmail] = useState('');
   const [backupCodeInput, setBackupCodeInput] = useState('');
+  const [mfaMethod, setMfaMethod] = useState('backup'); // 'backup' | 'email_otp'
+  const [emailOtpInput, setEmailOtpInput] = useState('');
+  const [backupCodesDepleted, setBackupCodesDepleted] = useState(false);
 
-  // Registration Success Modal (Backup Codes)
+  // Backup Codes Modal (Registration or Auto-Refill on depletion)
   const [showBackupCodesModal, setShowBackupCodesModal] = useState(false);
   const [generatedCodes, setGeneratedCodes] = useState([]);
   const [copiedCodes, setCopiedCodes] = useState(false);
+  const [modalMode, setModalMode] = useState('register'); // 'register' | 'refill'
 
   // Forgot password & reset state
   const [forgotEmail, setForgotEmail] = useState('');
@@ -122,11 +126,21 @@ export default function App() {
       // Step 1 Success: MFA Required
       setPreAuthToken(data.mfa_pre_auth_token);
       setMfaEmail(data.email);
+      setBackupCodesDepleted(!!data.backup_codes_depleted);
+      if (data.backup_codes_depleted) {
+        setMfaMethod('email_otp');
+        setStatusMessage({
+          type: 'success',
+          text: 'All backup codes were previously used. A one-time verification code has been dispatched to your email.',
+        });
+      } else {
+        setMfaMethod('backup');
+        setStatusMessage({
+          type: 'success',
+          text: 'Credentials verified! Please enter your single-use backup code to finish signing in.',
+        });
+      }
       setActiveTab('mfa');
-      setStatusMessage({
-        type: 'success',
-        text: 'Credentials verified! Please enter your single-use backup code to finish signing in.',
-      });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
     } finally {
@@ -134,7 +148,7 @@ export default function App() {
     }
   };
 
-  // ── 3. MFA STEP 2: VERIFY BACKUP CODE ────────────────────────────────────
+  // ── 3. MFA STEP 2A: VERIFY BACKUP CODE ───────────────────────────────────
   const handleVerifyBackupCode = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -159,9 +173,84 @@ export default function App() {
       // Success
       setAccessToken(data.access_token);
       setAuthenticatedUser(data.user);
+
+      // AUTO-REFILL PROMPT: Check if the 8th code was just used and refilled!
+      if (data.new_backup_codes && data.new_backup_codes.length > 0) {
+        setGeneratedCodes(data.new_backup_codes);
+        setModalMode('refill');
+        setShowBackupCodesModal(true);
+      } else {
+        setStatusMessage({
+          type: 'success',
+          text: `Welcome back, ${data.user.first_name || data.user.email}! Account access granted.`,
+        });
+      }
+    } catch (err) {
+      setStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── 3B. MFA STEP 2B: VERIFY EMAIL ONE-TIME CODE (WHEN DEPLETED) ───────────
+  const handleVerifyEmailOtp = async (e) => {
+    e.preventDefault();
+    clearMessages();
+    setLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/auth/mfa/verify-email-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mfa_pre_auth_token: preAuthToken,
+          otp_code: emailOtpInput.trim(),
+          device_hash: `dev_${navigator.userAgent.slice(0, 30)}`,
+          device_name: 'Property Base Secure Browser',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Email verification code invalid or expired.');
+      }
+
+      // Success
+      setAccessToken(data.access_token);
+      setAuthenticatedUser(data.user);
+
+      // AUTO-REFILL PROMPT: Show modal with fresh 8 backup codes immediately on dashboard
+      if (data.new_backup_codes && data.new_backup_codes.length > 0) {
+        setGeneratedCodes(data.new_backup_codes);
+        setModalMode('refill');
+        setShowBackupCodesModal(true);
+      } else {
+        setStatusMessage({
+          type: 'success',
+          text: `Welcome back, ${data.user.first_name || data.user.email}! Account access granted.`,
+        });
+      }
+    } catch (err) {
+      setStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRequestEmailOtp = async () => {
+    clearMessages();
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/mfa/send-email-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mfa_pre_auth_token: preAuthToken }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to dispatch email code.');
+      setMfaMethod('email_otp');
       setStatusMessage({
         type: 'success',
-        text: `Welcome back, ${data.user.first_name || data.user.email}! Account access granted.`,
+        text: 'A one-time verification code has been dispatched to your email.',
       });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
@@ -169,6 +258,7 @@ export default function App() {
       setLoading(false);
     }
   };
+
 
   // ── 4. FORGOT PASSWORD (STEP 1: REQUEST CODE) ────────────────────────────
   const handleRequestPasswordReset = async (e) => {
@@ -561,14 +651,16 @@ export default function App() {
 
               {/* ──────────────── TAB 3: MFA VERIFICATION ──────────────── */}
               {activeTab === 'mfa' && (
-                <form onSubmit={handleVerifyBackupCode} style={styles.form}>
+                <div style={styles.form}>
                   <div style={styles.headingGroup}>
                     <div style={styles.iconCircle}>
                       <KeyRound size={28} color="#4F46E5" />
                     </div>
                     <h2 style={styles.formHeading}>Two-Factor Authentication</h2>
                     <p style={styles.formSubheading}>
-                      Enter one of your single-use backup recovery codes to access Property Base
+                      {mfaMethod === 'email_otp'
+                        ? 'Enter the 6-digit one-time code sent to your registered email'
+                        : 'Enter one of your single-use backup recovery codes to access Property Base'}
                     </p>
                   </div>
 
@@ -578,41 +670,111 @@ export default function App() {
                     </div>
                   )}
 
-                  <div style={styles.inputGroup}>
-                    <span style={styles.inputIcon}><KeyRound size={18} color="#6366F1" /></span>
-                    <input
-                      type="text"
-                      required
-                      placeholder="Backup Code (e.g., A8K2-9P1Z)"
-                      value={backupCodeInput}
-                      onChange={(e) => setBackupCodeInput(e.target.value.toUpperCase())}
-                      style={{ ...styles.textInput, letterSpacing: '2px', fontWeight: 'bold' }}
-                    />
-                  </div>
+                  {backupCodesDepleted && (
+                    <div style={{ ...styles.errorBanner, background: '#FEF3C7', color: '#92400E', border: '1px solid #F59E0B' }}>
+                      <AlertCircle size={20} style={{ minWidth: 20 }} />
+                      <span style={{ fontSize: 13, lineHeight: '18px' }}>
+                        All 8 initial backup codes have been used. A one-time verification code was sent to your email.
+                        A fresh set of 8 backup codes will be generated upon login.
+                      </span>
+                    </div>
+                  )}
 
-                  <p style={styles.helperText}>
-                    * Each backup code can only be used <strong>once</strong>. It is permanently burned and destroyed immediately after authentication.
-                  </p>
+                  {mfaMethod === 'backup' && !backupCodesDepleted ? (
+                    <form onSubmit={handleVerifyBackupCode}>
+                      <div style={styles.inputGroup}>
+                        <span style={styles.inputIcon}><KeyRound size={18} color="#6366F1" /></span>
+                        <input
+                          type="text"
+                          required
+                          placeholder="Backup Code (e.g., A8K2-9P1Z)"
+                          value={backupCodeInput}
+                          onChange={(e) => setBackupCodeInput(e.target.value.toUpperCase())}
+                          style={{ ...styles.textInput, letterSpacing: '2px', fontWeight: 'bold' }}
+                        />
+                      </div>
 
-                  <button
-                    type="submit"
-                    disabled={loading || !backupCodeInput.trim()}
-                    style={loading || !backupCodeInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
-                  >
-                    {loading ? 'Verifying Code...' : 'VERIFY & ACCESS ACCOUNT'}
-                  </button>
+                      <p style={styles.helperText}>
+                        * Each backup code can only be used <strong>once</strong>. When you use your last code, a fresh set will be provisioned automatically.
+                      </p>
+
+                      <button
+                        type="submit"
+                        disabled={loading || !backupCodeInput.trim()}
+                        style={loading || !backupCodeInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
+                      >
+                        {loading ? 'Verifying Code...' : 'VERIFY & ACCESS ACCOUNT'}
+                      </button>
+
+                      <div style={{ marginTop: '16px', textAlign: 'center' }}>
+                        <button
+                          type="button"
+                          onClick={handleRequestEmailOtp}
+                          style={styles.textLink}
+                        >
+                          Send One-Time Code to Email Instead
+                        </button>
+                      </div>
+                    </form>
+                  ) : (
+                    <form onSubmit={handleVerifyEmailOtp}>
+                      <div style={styles.inputGroup}>
+                        <span style={styles.inputIcon}><Mail size={18} color="#6366F1" /></span>
+                        <input
+                          type="text"
+                          required
+                          maxLength={6}
+                          placeholder="6-Digit Email Code"
+                          value={emailOtpInput}
+                          onChange={(e) => setEmailOtpInput(e.target.value.trim())}
+                          style={{ ...styles.textInput, letterSpacing: '4px', fontWeight: 'bold' }}
+                        />
+                      </div>
+
+                      <p style={styles.helperText}>
+                        * Check your email for the 6-digit code. Valid for 10 minutes.
+                      </p>
+
+                      <button
+                        type="submit"
+                        disabled={loading || !emailOtpInput.trim()}
+                        style={loading || !emailOtpInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
+                      >
+                        {loading ? 'Verifying Email Code...' : 'VERIFY & RECEIVE REFILLED CODES'}
+                      </button>
+
+                      <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
+                        <button
+                          type="button"
+                          onClick={handleRequestEmailOtp}
+                          style={styles.textLink}
+                        >
+                          Resend Code
+                        </button>
+                        {!backupCodesDepleted && (
+                          <button
+                            type="button"
+                            onClick={() => setMfaMethod('backup')}
+                            style={styles.textLink}
+                          >
+                            Use Backup Code
+                          </button>
+                        )}
+                      </div>
+                    </form>
+                  )}
 
                   <p style={styles.footerPrompt}>
-                    Lost your backup codes?{' '}
+                    Lost access to email?{' '}
                     <button
                       type="button"
                       onClick={() => { setActiveTab('forgot'); clearMessages(); }}
                       style={styles.textLink}
                     >
-                      Reset via Email Code
+                      Password Reset
                     </button>
                   </p>
-                </form>
+                </div>
               )}
 
               {/* ──────────────── TAB 4: FORGOT / RESET PASSWORD ──────────────── */}
@@ -716,10 +878,15 @@ export default function App() {
               <div style={styles.modalIconBox}>
                 <ShieldCheck size={28} color="#4F46E5" />
               </div>
-              <h3 style={styles.modalTitle}>Save Your Backup Recovery Codes</h3>
+              <h3 style={styles.modalTitle}>
+                {modalMode === 'refill'
+                  ? 'Backup Codes Auto-Refilled!'
+                  : 'Save Your Backup Recovery Codes'}
+              </h3>
               <p style={styles.modalSubtitle}>
-                These 8 single-use codes allow you to sign in via two-factor authentication.
-                Store them securely now—<strong>they will never be shown again!</strong>
+                {modalMode === 'refill'
+                  ? 'All previous codes were exhausted. A fresh set of 8 single-use backup recovery codes has been generated for your account. Please save them now!'
+                  : 'These 8 single-use codes allow you to sign in via two-factor authentication. Store them securely now—they will never be shown again!'}
               </p>
             </div>
 
@@ -756,11 +923,18 @@ export default function App() {
               type="button"
               onClick={() => {
                 setShowBackupCodesModal(false);
-                setActiveTab('login');
-                setStatusMessage({
-                  type: 'success',
-                  text: 'Account created! Enter your credentials to sign in.',
-                });
+                if (modalMode === 'register') {
+                  setActiveTab('login');
+                  setStatusMessage({
+                    type: 'success',
+                    text: 'Account created! Enter your credentials to sign in.',
+                  });
+                } else {
+                  setStatusMessage({
+                    type: 'success',
+                    text: 'Your fresh backup codes have been activated and saved!',
+                  });
+                }
               }}
               style={styles.modalPrimaryBtn}
             >
