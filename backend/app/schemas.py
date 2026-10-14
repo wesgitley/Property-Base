@@ -18,22 +18,33 @@ from app.models import (
 # --- User Schemas ---
 
 class UserRegister(BaseModel):
+    first_name: str
+    last_name: str
+    mobile_number: str
     email: EmailStr
+    username: str
     password: str
     role: Optional[UserRole] = UserRole.SELLER
 
 
 class UserResponse(BaseModel):
     user_id: uuid.UUID
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+    mobile_number: Optional[str] = None
+    username: Optional[str] = None
     email: EmailStr
     role: UserRole
     status: UserStatus
-    mfa_enabled: bool
+    is_active: bool = True
+    is_mfa_enabled: bool = True
+    mfa_enabled: bool = True
     created_at: datetime
     backup_codes: Optional[List[str]] = None
 
     class Config:
         from_attributes = True
+
 
 
 # --- Telemetry & Login Schemas ---
@@ -122,6 +133,41 @@ class TokenResponse(BaseModel):
 
 # --- MFA & Recovery Schemas ---
 
+class LoginRequest(BaseModel):
+    email: EmailStr
+    password: str
+    device_hash: Optional[str] = "browser_default_hash"
+    device_name: Optional[str] = "Standard Browser"
+    user_agent: Optional[str] = None
+    ip_address: Optional[str] = None
+    remember_me: Optional[bool] = False
+
+
+class LoginStep1Response(BaseModel):
+    mfa_required: bool = True
+    mfa_pre_auth_token: str
+    message: str = "Credentials verified. MFA verification required."
+    user_id: uuid.UUID
+    email: EmailStr
+
+
+class MFABackupCodeVerifyRequest(BaseModel):
+    mfa_pre_auth_token: str
+    backup_code: str
+    device_hash: Optional[str] = "browser_default_hash"
+    device_name: Optional[str] = "Standard Browser"
+
+
+class ForgotPasswordRequest(BaseModel):
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    verification_code: str
+    new_password: str
+
+
 class MFAVerifyRequest(BaseModel):
     user_id: uuid.UUID
     otp_code: str
@@ -152,6 +198,7 @@ class RequestRecoveryLink(BaseModel):
 class VerifyRecoveryLink(BaseModel):
     recovery_token: str
     new_password: str
+
 
 
 # --- Admin Schemas ---

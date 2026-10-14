@@ -81,12 +81,20 @@ class User(Base):
     __tablename__ = "users"
 
     user_id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    first_name = Column(String(100), nullable=True)
+    last_name = Column(String(100), nullable=True)
+    mobile_number = Column(String(30), nullable=True)
+    username = Column(String(100), nullable=True, unique=True, index=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
     hashed_password = Column(String(255), nullable=False)
     role = Column(SQLEnum(UserRole), nullable=False, default=UserRole.SELLER)
     status = Column(SQLEnum(UserStatus), nullable=False, default=UserStatus.ACTIVE)
-    mfa_enabled = Column(Boolean, nullable=False, default=True)
-    backup_codes = Column(JSON, nullable=False, default=list)  # Hashed single-use recovery codes
+    is_active = Column(Boolean, nullable=False, default=True)
+    is_mfa_enabled = Column(Boolean, nullable=False, default=True)
+    mfa_enabled = Column(Boolean, nullable=False, default=True)  # Backward compatibility alias
+    failed_login_attempts = Column(Integer, nullable=False, default=0)
+    locked_until = Column(DateTime(timezone=True), nullable=True)
+    backup_codes = Column(JSON, nullable=False, default=list)  # Preserved for backward compatibility
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -104,7 +112,54 @@ class User(Base):
     behavior_baseline = relationship("UserBehaviorBaseline", back_populates="user", uselist=False, cascade="all, delete-orphan")
     risk_logs = relationship("RiskLog", back_populates="user", cascade="all, delete-orphan")
     mfa_challenges = relationship("MFAChallenge", back_populates="user", cascade="all, delete-orphan")
+    backup_code_entries = relationship("UserBackupCode", back_populates="user", cascade="all, delete-orphan")
+    otp_entries = relationship("MFAOTP", back_populates="user", cascade="all, delete-orphan")
     seller_profile = relationship("PropertySeller", back_populates="user", uselist=False, cascade="all, delete-orphan")
+
+
+class UserBackupCode(Base):
+    __tablename__ = "user_backup_codes"
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        GUID(),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    code_hash = Column(String(255), nullable=False, index=True)
+    is_used = Column(Boolean, nullable=False, default=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    user = relationship("User", back_populates="backup_code_entries")
+
+
+class MFAOTP(Base):
+    __tablename__ = "mfa_otps"
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        GUID(),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    otp_code_hash = Column(String(255), nullable=False, index=True)
+    attempts = Column(Integer, nullable=False, default=0)
+    is_used = Column(Boolean, nullable=False, default=False)
+    expires_at = Column(DateTime(timezone=True), nullable=False, index=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    user = relationship("User", back_populates="otp_entries")
 
 
 class UserDevice(Base):
@@ -155,6 +210,7 @@ class UserSession(Base):
     user_agent = Column(String(500), nullable=False)
     device_id = Column(GUID(), ForeignKey("user_devices.device_id", ondelete="SET NULL"), nullable=True)
     status = Column(SQLEnum(SessionStatus), nullable=False, default=SessionStatus.ACTIVE)
+    is_revoked = Column(Boolean, nullable=False, default=False)
     last_activity_at = Column(
         DateTime(timezone=True),
         nullable=False,

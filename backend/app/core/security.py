@@ -50,3 +50,21 @@ def create_access_token(
     }
     encoded = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
     return encoded, jti
+
+
+def create_pre_auth_token(user_id: str | Any, email: str, expires_minutes: int = 5) -> str:
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(minutes=expires_minutes)
+    to_encode = {
+        "sub": str(user_id),
+        "email": email,
+        "type": "mfa_pre_auth",
+        "iat": now.timestamp(),
+        "exp": expire.timestamp(),
+    }
+    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
+
+
+def decode_token(token: str) -> dict:
+    return jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+

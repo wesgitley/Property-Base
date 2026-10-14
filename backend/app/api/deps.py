@@ -55,11 +55,12 @@ def get_current_user(
     if session_id_str:
         user_session = db.query(UserSession).filter(UserSession.session_id == uuid.UUID(session_id_str)).first()
         if user_session:
-            if user_session.status != SessionStatus.ACTIVE:
+            if user_session.is_revoked or user_session.status != SessionStatus.ACTIVE:
                 raise HTTPException(
                     status_code=status.HTTP_401_UNAUTHORIZED,
-                    detail=f"Session is {user_session.status.value.lower()}.",
+                    detail="Session has been revoked or is no longer active.",
                 )
+
             now = datetime.now(timezone.utc)
             # Inactivity check
             if user_session.last_activity_at:
