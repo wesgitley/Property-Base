@@ -17,7 +17,7 @@ from sqlalchemy import (
 )
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy import JSON
-from sqlalchemy.orm import relationship
+from sqlalchemy.orm import relationship, synonym
 
 from app.core.database import Base, GUID
 
@@ -86,7 +86,8 @@ class User(Base):
     mobile_number = Column(String(30), nullable=True)
     username = Column(String(100), nullable=True, unique=True, index=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
-    hashed_password = Column(String(255), nullable=False)
+    password_hash = Column(String(255), nullable=False)
+    hashed_password = synonym("password_hash")
     role = Column(SQLEnum(UserRole), nullable=False, default=UserRole.SELLER)
     status = Column(SQLEnum(UserStatus), nullable=False, default=UserStatus.ACTIVE)
     is_active = Column(Boolean, nullable=False, default=True)
