@@ -470,15 +470,6 @@ export default function App() {
     );
   }
 
-  if (activeTab === 'seller_preview') {
-    return (
-      <SellerDashboard
-        user={{ first_name: 'Wesley', last_name: 'Mutisya', email: 'seller@propertybase.com', role: 'SELLER' }}
-        onLogout={() => setActiveTab('login')}
-      />
-    );
-  }
-
   return (
     <div style={styles.outerContainer}>
       <div style={styles.cardWrapper}>
@@ -516,8 +507,8 @@ export default function App() {
             <p style={styles.brandTagline}>High-Security Seller Platform</p>
           </div>
 
-          {/* Tab Navigation */}
-          {!authenticatedUser && (
+          {/* Tab Navigation: Only Sign In & Create Account */}
+          {!authenticatedUser && activeTab !== 'mfa' && (
             <div style={styles.tabBar}>
               <button
                 type="button"
@@ -532,20 +523,6 @@ export default function App() {
                 style={activeTab === 'register' ? styles.tabActive : styles.tabInactive}
               >
                 Create Account
-              </button>
-              <button
-                type="button"
-                onClick={() => { setActiveTab('mfa'); clearMessages(); }}
-                style={activeTab === 'mfa' ? styles.tabActive : styles.tabInactive}
-              >
-                MFA Verify
-              </button>
-              <button
-                type="button"
-                onClick={() => { setActiveTab('seller_preview'); clearMessages(); }}
-                style={activeTab === 'seller_preview' ? styles.tabActive : styles.tabInactive}
-              >
-                Seller Dashboard
               </button>
             </div>
           )}
@@ -830,10 +807,6 @@ export default function App() {
                         />
                       </div>
 
-                      <p style={styles.helperText}>
-                        * Each backup code can only be used <strong>once</strong>. When you use your last code, a fresh set will be provisioned automatically.
-                      </p>
-
                       <button
                         type="submit"
                         disabled={loading || !backupCodeInput.trim()}
@@ -900,16 +873,32 @@ export default function App() {
                     </form>
                   )}
 
-                  <p style={styles.footerPrompt}>
-                    Lost access to email?{' '}
+                  <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
+                    <p style={styles.footerPrompt}>
+                      Lost access to email?{' '}
+                      <button
+                        type="button"
+                        onClick={() => { setActiveTab('forgot'); clearMessages(); }}
+                        style={styles.textLink}
+                      >
+                        Password Reset
+                      </button>
+                    </p>
                     <button
                       type="button"
-                      onClick={() => { setActiveTab('forgot'); clearMessages(); }}
-                      style={styles.textLink}
+                      onClick={() => {
+                        setPreAuthToken(null);
+                        setMfaEmail('');
+                        setBackupCodeInput('');
+                        setEmailOtpInput('');
+                        setActiveTab('login');
+                        clearMessages();
+                      }}
+                      style={{ ...styles.textLink, fontSize: '13px', color: '#6B7280', display: 'inline-flex', alignItems: 'center', gap: '4px' }}
                     >
-                      Password Reset
+                      ← Back to Sign In
                     </button>
-                  </p>
+                  </div>
                 </div>
               )}
 
