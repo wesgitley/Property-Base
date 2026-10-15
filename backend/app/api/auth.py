@@ -557,7 +557,7 @@ def send_mfa_email_otp(
     db.add(otp_record)
     db.commit()
 
-    SimulatedMailbox.send_email(
+    dispatch_res = SimulatedMailbox.send_email(
         to_email=user.email,
         subject="Property Base - One-Time MFA Code",
         body_text=f"Your Property Base one-time verification code is: {otp_code}. Valid for 10 minutes.",
@@ -565,7 +565,10 @@ def send_mfa_email_otp(
         payload_data={"otp_code": otp_code, "user_id": str(user.user_id)},
     )
 
-    return {"message": "A 6-digit verification code has been dispatched to your email.", "expires_in": "10 minutes"}
+    res_data = {"message": "A 6-digit verification code has been dispatched to your email.", "expires_in": "10 minutes"}
+    if not dispatch_res.get("smtp_sent"):
+        res_data["dev_code"] = otp_code
+    return res_data
 
 
 @router.post("/mfa/verify-email-otp", response_model=TokenResponse)
@@ -771,7 +774,7 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -
     db.commit()
 
     # Dispatch email
-    SimulatedMailbox.send_email(
+    dispatch_res = SimulatedMailbox.send_email(
         to_email=user.email,
         subject="Property Base - Password Reset Verification Code",
         body_text=f"Your password reset verification code is: {otp_code}. This code expires in 10 minutes.",
@@ -779,10 +782,13 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -
         payload_data={"otp_code": otp_code, "email": user.email},
     )
 
-    return {
+    res_data = {
         "message": "If an account matches this email, a 6-digit verification code has been dispatched.",
         "expires_in": "10 minutes",
     }
+    if not dispatch_res.get("smtp_sent"):
+        res_data["dev_code"] = otp_code
+    return res_data
 
 
 @router.post("/reset-password")

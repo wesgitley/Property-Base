@@ -253,7 +253,9 @@ export default function App() {
       setMfaMethod('email_otp');
       setStatusMessage({
         type: 'success',
-        text: 'A one-time verification code has been dispatched to your email.',
+        text: data.dev_code
+          ? `One-time code: ${data.dev_code} (Enter this code to access your account)`
+          : 'A one-time verification code has been dispatched to your email.',
       });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
@@ -281,7 +283,9 @@ export default function App() {
       setForgotMode('reset');
       setStatusMessage({
         type: 'success',
-        text: 'A 6-digit verification code has been dispatched to your email. Enter it below with your new password.',
+        text: data.dev_code
+          ? `Verification Code: ${data.dev_code} (Enter this code below with your new password)`
+          : 'A 6-digit verification code has been dispatched to your email. Enter it below with your new password.',
       });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
