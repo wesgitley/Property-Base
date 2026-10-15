@@ -61,6 +61,7 @@ export default function App() {
   // Authenticated state
   const [authenticatedUser, setAuthenticatedUser] = useState(null);
   const [accessToken, setAccessToken] = useState('');
+  const [adminViewMode, setAdminViewMode] = useState('soc'); // 'soc' | 'seller'
 
   // Status feedback
   const [loading, setLoading] = useState(false);
@@ -430,12 +431,26 @@ export default function App() {
 
   // ── 6. ADMIN VIEW BRANCHING (ATO FRAUD DETECTION & SOC CONTROL ROOM) ───────
   if (authenticatedUser && authenticatedUser.role === 'ADMIN') {
+    if (adminViewMode === 'seller') {
+      return (
+        <>
+          <SellerDashboard
+            user={authenticatedUser}
+            onLogout={handleLogout}
+            onSwitchToAdmin={() => setAdminViewMode('soc')}
+          />
+          {renderBackupModal()}
+        </>
+      );
+    }
+
     return (
       <>
         <AdminDashboard
           user={authenticatedUser}
           token={accessToken}
           onLogout={handleLogout}
+          onSwitchToSeller={() => setAdminViewMode('seller')}
         />
         {renderBackupModal()}
       </>
