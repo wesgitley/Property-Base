@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import AdminDashboard from './AdminDashboard';
+import SellerDashboard from './SellerDashboard';
 import {
   ShieldCheck,
   Mail,
@@ -60,6 +61,7 @@ export default function App() {
   // Authenticated state
   const [authenticatedUser, setAuthenticatedUser] = useState(null);
   const [accessToken, setAccessToken] = useState('');
+  const [adminViewMode, setAdminViewMode] = useState('soc'); // 'soc' | 'seller'
 
   // Status feedback
   const [loading, setLoading] = useState(false);
@@ -429,15 +431,51 @@ export default function App() {
 
   // ── 6. ADMIN VIEW BRANCHING (ATO FRAUD DETECTION & SOC CONTROL ROOM) ───────
   if (authenticatedUser && authenticatedUser.role === 'ADMIN') {
+    if (adminViewMode === 'seller') {
+      return (
+        <>
+          <SellerDashboard
+            user={authenticatedUser}
+            onLogout={handleLogout}
+            onSwitchToAdmin={() => setAdminViewMode('soc')}
+          />
+          {renderBackupModal()}
+        </>
+      );
+    }
+
     return (
       <>
         <AdminDashboard
           user={authenticatedUser}
           token={accessToken}
           onLogout={handleLogout}
+          onSwitchToSeller={() => setAdminViewMode('seller')}
         />
         {renderBackupModal()}
       </>
+    );
+  }
+
+  // ── 7. SELLER DASHBOARD VIEW (WHEN AUTHENTICATED OR PREVIEWING) ────────────
+  if (authenticatedUser && authenticatedUser.role !== 'ADMIN') {
+    return (
+      <>
+        <SellerDashboard
+          user={authenticatedUser}
+          onLogout={handleLogout}
+        />
+        {renderBackupModal()}
+      </>
+    );
+  }
+
+  if (activeTab === 'seller_preview') {
+    return (
+      <SellerDashboard
+        user={{ first_name: 'Wesley', last_name: 'Mutisya', email: 'seller@propertybase.com', role: 'SELLER' }}
+        onLogout={() => setActiveTab('login')}
+      />
     );
   }
 
@@ -501,6 +539,13 @@ export default function App() {
                 style={activeTab === 'mfa' ? styles.tabActive : styles.tabInactive}
               >
                 MFA Verify
+              </button>
+              <button
+                type="button"
+                onClick={() => { setActiveTab('seller_preview'); clearMessages(); }}
+                style={activeTab === 'seller_preview' ? styles.tabActive : styles.tabInactive}
+              >
+                Seller Dashboard
               </button>
             </div>
           )}
