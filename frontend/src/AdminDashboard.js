@@ -16,11 +16,12 @@ import {
   Database,
   Lock,
   User,
+  Building2,
 } from 'lucide-react';
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
 
-export default function AdminDashboard({ user, token, onLogout }) {
+export default function AdminDashboard({ user, token, onLogout, onSwitchToSeller }) {
   // Navigation tabs
   const [activeTab, setActiveTab] = useState('sessions'); // 'sessions' | 'metrics' | 'audit'
 
@@ -237,6 +238,29 @@ export default function AdminDashboard({ user, token, onLogout }) {
               <div style={styles.adminRole}>System Administrator (Tier 1 SOC)</div>
             </div>
           </div>
+
+          {onSwitchToSeller && (
+            <button
+              onClick={onSwitchToSeller}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '8px 14px',
+                backgroundColor: '#4F46E5',
+                color: '#FFFFFF',
+                borderRadius: '8px',
+                border: 'none',
+                fontWeight: '600',
+                fontSize: '13px',
+                cursor: 'pointer',
+              }}
+              title="Open Seller Portal"
+            >
+              <Building2 size={16} />
+              <span>Seller Portal</span>
+            </button>
+          )}
 
           <button
             onClick={refreshAllData}
