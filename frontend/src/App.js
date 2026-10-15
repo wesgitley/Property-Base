@@ -20,6 +20,15 @@ import {
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
 
+const GoogleIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 18 18" style={{ minWidth: 18 }}>
+    <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.616z"/>
+    <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
+    <path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.175 0 7.55 0 9s.347 2.825.957 4.039l3.007-2.332z"/>
+    <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z"/>
+  </svg>
+);
+
 export default function App() {
   // Navigation tabs: 'login' | 'register' | 'mfa' | 'forgot'
   const [activeTab, setActiveTab] = useState('login');
@@ -404,6 +413,82 @@ export default function App() {
     }
   };
 
+  // ── 6. GOOGLE SIGN-IN HANDLER ─────────────────────────────────────────────
+  const processGoogleLogin = async (idToken) => {
+    clearMessages();
+    setLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/auth/google-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          id_token: idToken,
+          device_hash: `dev_${navigator.userAgent.slice(0, 30)}`,
+          device_name: 'Property Base Secure Browser',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Google sign-in failed.');
+
+      setAccessToken(data.access_token);
+      setAuthenticatedUser(data.user);
+
+      if (data.is_new_user && data.new_backup_codes && data.new_backup_codes.length > 0) {
+        setGeneratedCodes(data.new_backup_codes);
+        setModalMode('register');
+        setShowBackupCodesModal(true);
+      } else {
+        setStatusMessage({
+          type: 'success',
+          text: `Welcome, ${data.user.first_name || data.user.email}! Signed in with Google.`,
+        });
+      }
+    } catch (err) {
+      setStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleGoogleSignIn = () => {
+    clearMessages();
+    const clientId = process.env.REACT_APP_GOOGLE_CLIENT_ID;
+
+    if (window.google && window.google.accounts && clientId) {
+      window.google.accounts.id.initialize({
+        client_id: clientId,
+        callback: (response) => {
+          if (response.credential) {
+            processGoogleLogin(response.credential);
+          }
+        },
+      });
+      window.google.accounts.id.prompt();
+    } else {
+      const emailInput = window.prompt(
+        'Google Sign-In:\n\nEnter your Google email to test instant sign-in with your account (or enter your live Google OAuth Client ID):',
+        'wesley.mutisya@strathmore.edu'
+      );
+      if (emailInput && emailInput.trim()) {
+        const val = emailInput.trim();
+        if (val.includes('.apps.googleusercontent.com')) {
+          if (window.google && window.google.accounts) {
+            window.google.accounts.id.initialize({
+              client_id: val,
+              callback: (response) => {
+                if (response.credential) processGoogleLogin(response.credential);
+              },
+            });
+            window.google.accounts.id.prompt();
+          }
+        } else {
+          processGoogleLogin(`mock_google_${val}`);
+        }
+      }
+    }
+  };
+
   // ── BACKUP CODES UTILITIES ───────────────────────────────────────────────
   const copyCodesToClipboard = () => {
     navigator.clipboard.writeText(generatedCodes.join('\n'));
@@ -725,6 +810,22 @@ export default function App() {
                     {loading ? 'Verifying Credentials...' : 'SIGN IN'}
                   </button>
 
+                  <div style={styles.dividerRow}>
+                    <div style={styles.dividerLine} />
+                    <span style={styles.dividerText}>or continue with</span>
+                    <div style={styles.dividerLine} />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignIn}
+                    style={styles.googleBtn}
+                    disabled={loading}
+                  >
+                    <GoogleIcon />
+                    <span>Sign in with Google</span>
+                  </button>
+
                   <p style={styles.footerPrompt}>
                     Don't have an account?{' '}
                     <button
@@ -829,6 +930,22 @@ export default function App() {
                     style={loading ? styles.primaryBtnDisabled : styles.primaryBtn}
                   >
                     {loading ? 'Registering...' : 'REGISTER'}
+                  </button>
+
+                  <div style={styles.dividerRow}>
+                    <div style={styles.dividerLine} />
+                    <span style={styles.dividerText}>or continue with</span>
+                    <div style={styles.dividerLine} />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={handleGoogleSignIn}
+                    style={styles.googleBtn}
+                    disabled={loading}
+                  >
+                    <GoogleIcon />
+                    <span>Sign up with Google</span>
                   </button>
 
                   <p style={styles.footerPrompt}>
@@ -1427,6 +1544,41 @@ const styles = {
     display: 'flex',
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  dividerRow: {
+    display: 'flex',
+    alignItems: 'center',
+    margin: '18px 0 14px 0',
+    gap: '12px',
+  },
+  dividerLine: {
+    flex: 1,
+    height: '1px',
+    backgroundColor: '#E2E8F0',
+  },
+  dividerText: {
+    fontSize: '11px',
+    color: '#94A3B8',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+  },
+  googleBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '10px',
+    width: '100%',
+    padding: '11px 16px',
+    backgroundColor: '#FFFFFF',
+    color: '#1E293B',
+    border: '1px solid #CBD5E1',
+    borderRadius: '10px',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+    transition: 'all 0.15s ease',
   },
   footerPrompt: {
     textAlign: 'center',

@@ -188,6 +188,13 @@ class ResetPasswordRequest(BaseModel):
     new_password: str
 
 
+class GoogleLoginRequest(BaseModel):
+    id_token: str
+    device_hash: Optional[str] = "browser_default_hash"
+    device_name: Optional[str] = "Google Sign-In Device"
+
+
+
 class MFAVerifyRequest(BaseModel):
     user_id: uuid.UUID
     otp_code: str
