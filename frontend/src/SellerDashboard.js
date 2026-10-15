@@ -30,184 +30,9 @@ import {
   AlertCircle,
   Clock,
   Sparkles,
+  UploadCloud,
+  Camera,
 } from 'lucide-react';
-
-// ── INITIAL MOCK DATA ────────────────────────────────────────────────────────
-const INITIAL_LISTINGS = [
-  {
-    id: 'prop-101',
-    title: 'Skyline Modern Villa',
-    location: 'Karen, Nairobi',
-    price: 850000,
-    property_type: 'Luxury Villa',
-    bedrooms: 5,
-    bathrooms: 5.5,
-    square_feet: 5200,
-    status: 'ACTIVE',
-    image_url: 'https://images.unsplash.com/photo-1613977257363-707ba9348227?auto=format&fit=crop&w=1200&q=80',
-    description:
-      'Architecturally designed contemporary residence situated on half an acre in Karen. Features double-height living spaces, floor-to-ceiling glass, private heated infinity pool, smart home automation, and staff quarters.',
-    views_count: 1420,
-    inquiries_count: 18,
-    created_at: 'Oct 2, 2026',
-  },
-  {
-    id: 'prop-102',
-    title: 'Oceanfront Glass Penthouse',
-    location: 'Nyali Beach, Mombasa',
-    price: 620000,
-    property_type: 'Penthouse',
-    bedrooms: 4,
-    bathrooms: 4,
-    square_feet: 3800,
-    status: 'ACTIVE',
-    image_url: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=1200&q=80',
-    description:
-      'Breathtaking top-floor penthouse with 270-degree Indian Ocean panoramas. Private elevator access, wrap-around oceanfront terrace, imported Italian kitchen, and 24/7 biometric security.',
-    views_count: 2150,
-    inquiries_count: 24,
-    created_at: 'Sep 24, 2026',
-  },
-  {
-    id: 'prop-103',
-    title: 'Executive Suburban Residence',
-    location: 'Runda Mimosa, Nairobi',
-    price: 740000,
-    property_type: 'Family Home',
-    bedrooms: 4,
-    bathrooms: 4.5,
-    square_feet: 4600,
-    status: 'PENDING',
-    image_url: 'https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=1200&q=80',
-    description:
-      'Gated diplomatic-zone luxury home with mature landscaped gardens, gourmet chef kitchen, solar backup system, borehole water supply, and UN-security approved perimeter defense.',
-    views_count: 980,
-    inquiries_count: 12,
-    created_at: 'Oct 8, 2026',
-  },
-  {
-    id: 'prop-104',
-    title: 'Contemporary Golf Course Villa',
-    location: 'Vipingo Ridge, Kilifi',
-    price: 520000,
-    property_type: 'Golf Estate',
-    bedrooms: 3,
-    bathrooms: 3.5,
-    square_feet: 3100,
-    status: 'ACTIVE',
-    image_url: 'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80',
-    description:
-      'Serene coastal lifestyle within a PGA-championship golf estate. Rooftop plunge pool, breezy open-concept architecture, private airstrip access, and clubhouse amenities.',
-    views_count: 1100,
-    inquiries_count: 9,
-    created_at: 'Oct 5, 2026',
-  },
-  {
-    id: 'prop-105',
-    title: 'Urban High-Rise Duplex',
-    location: 'Westlands, Nairobi',
-    price: 380000,
-    property_type: 'Luxury Apartment',
-    bedrooms: 3,
-    bathrooms: 3,
-    square_feet: 2400,
-    status: 'ACTIVE',
-    image_url: 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?auto=format&fit=crop&w=1200&q=80',
-    description:
-      'High-yield investment duplex in the heart of Westlands commercial corridor. Rooftop heated pool, residents lounge, full backup generator, and seamless rental management.',
-    views_count: 1740,
-    inquiries_count: 16,
-    created_at: 'Sep 29, 2026',
-  },
-  {
-    id: 'prop-106',
-    title: 'Historic Colonial Manor',
-    location: 'Muthaiga, Nairobi',
-    price: 1250000,
-    property_type: 'Estate Manor',
-    bedrooms: 6,
-    bathrooms: 6,
-    square_feet: 7000,
-    status: 'SOLD',
-    image_url: 'https://images.unsplash.com/photo-1600607687939-ce8a6c25118c?auto=format&fit=crop&w=1200&q=80',
-    description:
-      'Prime Muthaiga classic estate sitting on 1.2 acres of indigenous forest grounds. Hardwood floors, library, wine cellar, tennis court, and detached 2-bedroom guest cottage.',
-    views_count: 3400,
-    inquiries_count: 31,
-    created_at: 'Aug 14, 2026',
-  },
-];
-
-const INITIAL_OFFERS = [
-  {
-    id: 'off-501',
-    property_id: 'prop-101',
-    property_title: 'Skyline Modern Villa',
-    property_image: 'https://images.unsplash.com/photo-1613977257363-707ba9348227?auto=format&fit=crop&w=400&q=80',
-    client_name: 'Dr. Arthur Otieno',
-    client_email: 'arthur.otieno@gmail.com',
-    client_phone: '+254 712 345 678',
-    offer_amount: 820000,
-    list_price: 850000,
-    date_received: 'Oct 12, 2026',
-    message_preview:
-      'We are cash buyers with pre-approved financing. Can close within 14 days if structural inspection passes cleanly.',
-    financing_type: 'Cash & Pre-Approved Loan (Absa Bank)',
-    contingencies: 'Home inspection within 7 days',
-    status: 'PENDING',
-  },
-  {
-    id: 'off-502',
-    property_id: 'prop-102',
-    property_title: 'Oceanfront Glass Penthouse',
-    property_image: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=400&q=80',
-    client_name: 'Sophia Wanjiku & David Miller',
-    client_email: 'sophia.miller@consulting.co.uk',
-    client_phone: '+44 7911 123456',
-    offer_amount: 605000,
-    list_price: 620000,
-    date_received: 'Oct 11, 2026',
-    message_preview:
-      'Fell in love with the ocean view on our vacation. We are ready to put down 25% earnest deposit immediately upon contract acceptance.',
-    financing_type: 'Wire Transfer / Proof of Funds Available',
-    contingencies: 'Clear title deed verification',
-    status: 'PENDING',
-  },
-  {
-    id: 'off-503',
-    property_id: 'prop-103',
-    property_title: 'Executive Suburban Residence',
-    property_image: 'https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=400&q=80',
-    client_name: 'Ambassador Jean-Luc Dubois',
-    client_email: 'jeanluc.dubois@diplomatie.gouv.fr',
-    client_phone: '+254 722 998 877',
-    offer_amount: 740000,
-    list_price: 740000,
-    date_received: 'Oct 8, 2026',
-    message_preview:
-      'Full asking price offer. Contract approved by embassy legal advisor. Move-in scheduled for November 1st.',
-    financing_type: 'Institutional Government Wire',
-    contingencies: 'None (As-Is Acceptance)',
-    status: 'ACCEPTED',
-  },
-  {
-    id: 'off-504',
-    property_id: 'prop-105',
-    property_title: 'Urban High-Rise Duplex',
-    property_image: 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?auto=format&fit=crop&w=400&q=80',
-    client_name: 'Apex Capital Holdings Ltd',
-    client_email: 'acquisitions@apexcapital.ke',
-    client_phone: '+254 700 112 233',
-    offer_amount: 320000,
-    list_price: 380000,
-    date_received: 'Oct 3, 2026',
-    message_preview:
-      'Low cash offer for immediate portfolio acquisition. Ready to close within 72 hours if seller accepts price markdown.',
-    financing_type: 'Liquid Corporate Reserves',
-    contingencies: '72-hour expedited close',
-    status: 'DECLINED',
-  },
-];
 
 // ── SYNTHETIC BUYERS POOL (FOR REALISTIC OFFER GENERATION) ───────────────────
 const SYNTHETIC_BUYER_POOL = [
@@ -352,7 +177,7 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
     bathrooms: 3,
     square_feet: 2500,
     status: 'ACTIVE',
-    image_url: '',
+    images: [],
     description: '',
   });
 
@@ -369,6 +194,75 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
     setTimeout(() => setFeedback(null), 4500);
   };
 
+  // ── PHOTO UPLOAD HANDLERS (LOCAL IMAGE FILES) ──────────────────────────────
+  const handlePhotoFilesSelected = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    const fileReaders = files.map((file) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (event) => resolve(event.target.result);
+        reader.readAsDataURL(file);
+      });
+    });
+
+    Promise.all(fileReaders).then((newBase64Images) => {
+      setNewProperty((prev) => ({
+        ...prev,
+        images: [...(prev.images || []), ...newBase64Images],
+      }));
+      showToast('success', `${files.length} property photo(s) uploaded successfully.`);
+    });
+    e.target.value = '';
+  };
+
+  const handleRemovePhoto = (indexToRemove) => {
+    setNewProperty((prev) => ({
+      ...prev,
+      images: (prev.images || []).filter((_, idx) => idx !== indexToRemove),
+    }));
+  };
+
+  const handleEditPhotoFilesSelected = (e) => {
+    const files = Array.from(e.target.files || []);
+    if (!files.length) return;
+
+    const fileReaders = files.map((file) => {
+      return new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onload = (event) => resolve(event.target.result);
+        reader.readAsDataURL(file);
+      });
+    });
+
+    Promise.all(fileReaders).then((newBase64Images) => {
+      setEditFormData((prev) => {
+        const currentList = prev.images || (prev.image_url ? [prev.image_url] : []);
+        const updatedImages = [...currentList, ...newBase64Images];
+        return {
+          ...prev,
+          images: updatedImages,
+          image_url: updatedImages[0] || prev.image_url,
+        };
+      });
+      showToast('success', `${files.length} new photo(s) added to property listing.`);
+    });
+    e.target.value = '';
+  };
+
+  const handleRemoveEditPhoto = (indexToRemove) => {
+    setEditFormData((prev) => {
+      const currentList = prev.images || (prev.image_url ? [prev.image_url] : []);
+      const updatedImages = currentList.filter((_, idx) => idx !== indexToRemove);
+      return {
+        ...prev,
+        images: updatedImages,
+        image_url: updatedImages[0] || '',
+      };
+    });
+  };
+
   // ── SYNTHETIC OFFER GENERATOR ─────────────────────────────────────────────
   // Generates realistic verified prospective buyer offers tailored to a property
   const generateSyntheticOffers = (targetProperty, count = 1) => {
@@ -381,11 +275,16 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
     const newOffers = selectedBuyers.map((buyer, idx) => {
       // Calculate realistic offer price rounded to nearest $5,000
       const calculatedAmt = Math.round((Number(targetProperty.price) * buyer.discount) / 5000) * 5000;
+      const primaryPhoto =
+        targetProperty.image_url ||
+        (targetProperty.images && targetProperty.images[0]) ||
+        '';
+
       return {
         id: `off-${Date.now().toString().slice(-5)}-${idx + 1}-${Math.floor(Math.random() * 900 + 100)}`,
         property_id: targetProperty.id,
         property_title: targetProperty.title,
-        property_image: targetProperty.image_url,
+        property_image: primaryPhoto,
         client_name: buyer.name,
         client_avatar: buyer.avatar,
         client_email: buyer.email,
@@ -423,34 +322,22 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
     );
   };
 
-  // Helpers for testing / demo
-  const handleLoadSampleListings = () => {
-    setListings(INITIAL_LISTINGS);
-    setOffers(INITIAL_OFFERS);
-    showToast('success', 'Loaded sample luxury listings and client offers.');
-  };
-
-  const handleClearPortfolio = () => {
-    if (!window.confirm('Clear all listings and offers for this account to test clean state?')) return;
-    setListings([]);
-    setOffers([]);
-    try {
-      localStorage.removeItem(storageKeyListings);
-      localStorage.removeItem(storageKeyOffers);
-    } catch (e) {}
-    showToast('success', 'Portfolio cleared to empty state.');
-  };
-
   // ── HANDLERS: LISTINGS ────────────────────────────────────────────────────
   const handleViewProperty = (property) => {
     setSelectedProperty(property);
-    setEditFormData({ ...property });
+    setEditFormData({
+      ...property,
+      images: property.images || (property.image_url ? [property.image_url] : []),
+    });
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleSavePropertyChanges = (e) => {
     e.preventDefault();
     if (!editFormData) return;
+
+    const primaryImg =
+      (editFormData.images && editFormData.images[0]) || editFormData.image_url || '';
 
     setListings((prev) =>
       prev.map((item) =>
@@ -461,6 +348,8 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
               bedrooms: Number(editFormData.bedrooms),
               bathrooms: Number(editFormData.bathrooms),
               square_feet: Number(editFormData.square_feet),
+              image_url: primaryImg,
+              images: editFormData.images && editFormData.images.length > 0 ? editFormData.images : [primaryImg],
             }
           : item
       )
@@ -488,16 +377,26 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
       return;
     }
 
+    if (!newProperty.images || newProperty.images.length === 0) {
+      showToast('error', 'Please upload at least one photo of your property.');
+      return;
+    }
+
+    const primaryImage = newProperty.images[0];
+
     const createdItem = {
       id: `prop-${Date.now().toString().slice(-4)}`,
-      ...newProperty,
+      title: newProperty.title.trim(),
+      location: newProperty.location.trim(),
       price: Number(newProperty.price),
+      property_type: newProperty.property_type,
       bedrooms: Number(newProperty.bedrooms),
       bathrooms: Number(newProperty.bathrooms),
       square_feet: Number(newProperty.square_feet),
-      image_url:
-        newProperty.image_url.trim() ||
-        'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80',
+      image_url: primaryImage,
+      images: newProperty.images,
+      description: newProperty.description.trim(),
+      status: 'ACTIVE',
       views_count: Math.floor(Math.random() * 25) + 14,
       inquiries_count: 0,
       created_at: 'Just now',
@@ -515,10 +414,10 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
       bathrooms: 3,
       square_feet: 2500,
       status: 'ACTIVE',
-      image_url: '',
+      images: [],
       description: '',
     });
-    showToast('success', `Listing "${createdItem.title}" published! Attracting prospective buyer interest...`);
+    showToast('success', `Listing "${createdItem.title}" published with ${createdItem.images.length} photo(s)! Attracting buyer proposals...`);
 
     // 2. Automatically generate synthetic buyer offers for this newly created listing!
     setTimeout(() => {
@@ -731,31 +630,6 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
             </button>
           )}
 
-          {listings.length > 0 && isSidebarOpen && (
-            <button
-              onClick={handleClearPortfolio}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '6px 10px',
-                backgroundColor: 'transparent',
-                color: '#94A3B8',
-                border: '1px dashed #334155',
-                borderRadius: '6px',
-                fontSize: '11px',
-                cursor: 'pointer',
-                marginBottom: '8px',
-                width: '100%',
-                justifyContent: 'center',
-              }}
-              title="Clear all listings to test clean empty state"
-            >
-              <Trash2 size={13} />
-              <span>Reset to Empty State</span>
-            </button>
-          )}
-
           <button
             onClick={onLogout}
             style={isSidebarOpen ? styles.logoutFullBtn : styles.logoutIconBtn}
@@ -872,7 +746,7 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
               {/* Photo Preview & Edit Image URL */}
               <div style={styles.photoContainer}>
                 <img
-                  src={editFormData.image_url}
+                  src={(editFormData.images && editFormData.images[0]) || editFormData.image_url}
                   alt={editFormData.title}
                   style={styles.largeHeroImage}
                 />
@@ -880,6 +754,41 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                   Status: <strong>{editFormData.status}</strong>
                 </div>
               </div>
+
+              {/* Multi-Photo Strip in Edit View if > 1 photo */}
+              {editFormData.images && editFormData.images.length > 1 && (
+                <div style={{ display: 'flex', gap: '10px', marginTop: '-12px', marginBottom: '22px', overflowX: 'auto', paddingBottom: '6px' }}>
+                  {editFormData.images.map((imgSrc, idx) => (
+                    <div
+                      key={idx}
+                      onClick={() => {
+                        const updated = [imgSrc, ...editFormData.images.filter((_, i) => i !== idx)];
+                        setEditFormData({ ...editFormData, images: updated, image_url: imgSrc });
+                        showToast('success', `Cover photo switched to photo #${idx + 1}`);
+                      }}
+                      style={{
+                        width: '84px',
+                        height: '60px',
+                        borderRadius: '8px',
+                        overflow: 'hidden',
+                        cursor: 'pointer',
+                        border: idx === 0 ? '2px solid #4F46E5' : '1px solid #CBD5E1',
+                        opacity: idx === 0 ? 1 : 0.75,
+                        flexShrink: 0,
+                        position: 'relative',
+                      }}
+                      title="Click to set as primary cover photo"
+                    >
+                      <img src={imgSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                      {idx === 0 && (
+                        <span style={{ position: 'absolute', bottom: 2, left: 2, backgroundColor: '#4F46E5', color: '#fff', fontSize: '8px', padding: '1px 4px', borderRadius: '3px', fontWeight: '700' }}>
+                          Cover
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
 
               {/* Form Grid */}
               <div style={styles.formGrid}>
@@ -993,15 +902,86 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                 </div>
 
                 <div style={{ ...styles.formCol, gridColumn: 'span 2' }}>
-                  <label style={styles.fieldLabel}>Hero Image URL</label>
-                  <input
-                    type="url"
-                    value={editFormData.image_url}
-                    onChange={(e) =>
-                      setEditFormData({ ...editFormData, image_url: e.target.value })
-                    }
-                    style={styles.inputField}
-                  />
+                  <label style={styles.fieldLabel}>
+                    Property Photos ({editFormData.images ? editFormData.images.length : (editFormData.image_url ? 1 : 0)} uploaded)
+                  </label>
+                  <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap', alignItems: 'center' }}>
+                    {((editFormData.images && editFormData.images.length > 0)
+                      ? editFormData.images
+                      : editFormData.image_url
+                      ? [editFormData.image_url]
+                      : []
+                    ).map((imgSrc, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          position: 'relative',
+                          width: '90px',
+                          height: '65px',
+                          borderRadius: '8px',
+                          overflow: 'hidden',
+                          border: idx === 0 ? '2px solid #4F46E5' : '1px solid #CBD5E1',
+                        }}
+                      >
+                        <img src={imgSrc} alt="" style={{ width: '100%', height: '100%', objectFit: 'cover' }} />
+                        {idx === 0 && (
+                          <span style={{ position: 'absolute', bottom: 2, left: 2, backgroundColor: '#4F46E5', color: '#fff', fontSize: '8px', padding: '1px 4px', borderRadius: '3px', fontWeight: '700' }}>
+                            Cover
+                          </span>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => handleRemoveEditPhoto(idx)}
+                          style={{
+                            position: 'absolute',
+                            top: 2,
+                            right: 2,
+                            width: '18px',
+                            height: '18px',
+                            borderRadius: '50%',
+                            backgroundColor: 'rgba(15, 23, 42, 0.8)',
+                            color: '#FFFFFF',
+                            border: 'none',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            cursor: 'pointer',
+                          }}
+                          title="Remove photo"
+                        >
+                          <X size={11} />
+                        </button>
+                      </div>
+                    ))}
+
+                    <label
+                      htmlFor="edit-property-photo-upload"
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                        padding: '10px 14px',
+                        borderRadius: '8px',
+                        border: '1px dashed #4F46E5',
+                        backgroundColor: '#EEF2FF',
+                        color: '#4F46E5',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <UploadCloud size={16} />
+                      <span>Upload More Photos</span>
+                      <input
+                        id="edit-property-photo-upload"
+                        type="file"
+                        multiple
+                        accept="image/*"
+                        onChange={handleEditPhotoFilesSelected}
+                        style={{ display: 'none' }}
+                      />
+                    </label>
+                  </div>
                 </div>
 
                 <div style={{ ...styles.formCol, gridColumn: 'span 2' }}>
@@ -1150,26 +1130,13 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                       ? 'Your seller portfolio is currently empty. Post your first property listing to showcase your home to prospective buyers and start receiving verified purchase offers.'
                       : 'No listings match your current search or filter criteria. Try clearing your filters or search terms.'}
                   </p>
-                  <div style={{ display: 'flex', gap: '12px', marginTop: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                  <div style={{ marginTop: '12px', display: 'flex', justifyContent: 'center' }}>
                     <button
                       onClick={() => setIsAddModalOpen(true)}
                       style={styles.primaryAddBtn}
                     >
                       <Plus size={16} /> Post Your First Listing
                     </button>
-                    {listings.length === 0 && (
-                      <button
-                        onClick={handleLoadSampleListings}
-                        style={{
-                          ...styles.cancelBtn,
-                          fontSize: '13px',
-                          padding: '10px 16px',
-                        }}
-                        title="Load 5 pre-made luxury villas and penthouses to explore"
-                      >
-                        Load Sample Portfolio
-                      </button>
-                    )}
                   </div>
                 </div>
               ) : (
@@ -1179,10 +1146,32 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                       {/* Photo Thumbnail */}
                       <div style={styles.cardImageWrapper}>
                         <img
-                          src={prop.image_url}
+                          src={prop.image_url || (prop.images && prop.images[0])}
                           alt={prop.title}
                           style={styles.cardImage}
                         />
+                        {prop.images && prop.images.length > 1 && (
+                          <div
+                            style={{
+                              position: 'absolute',
+                              bottom: '10px',
+                              right: '10px',
+                              backgroundColor: 'rgba(15, 23, 42, 0.75)',
+                              color: '#FFFFFF',
+                              backdropFilter: 'blur(4px)',
+                              padding: '3px 8px',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              fontWeight: '600',
+                              display: 'flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                            }}
+                          >
+                            <Camera size={12} />
+                            <span>{prop.images.length} Photos</span>
+                          </div>
+                        )}
                         <div
                           style={{
                             ...styles.statusTag,
@@ -1248,6 +1237,31 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                             >
                               <span>View & Edit</span>
                               <ArrowRight size={15} />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteProperty(prop.id);
+                              }}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '8px 10px',
+                                backgroundColor: '#FEF2F2',
+                                color: '#DC2626',
+                                border: '1px solid #FECACA',
+                                borderRadius: '8px',
+                                fontSize: '12px',
+                                fontWeight: '600',
+                                cursor: 'pointer',
+                              }}
+                              title="Delete Listing"
+                            >
+                              <Trash2 size={13} />
+                              <span>Delete</span>
                             </button>
                           </div>
                         </div>
@@ -1614,57 +1628,159 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                 </div>
 
                 <div style={{ ...styles.formCol, gridColumn: 'span 2' }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
-                    <label style={{ ...styles.fieldLabel, margin: 0 }}>Photo URL (High Resolution)</label>
-                    <span style={{ fontSize: 11, color: '#6366F1', fontWeight: '600' }}>Quick Presets (Click to autofill):</span>
-                  </div>
+                  <label style={styles.fieldLabel}>
+                    Property Photos * {newProperty.images && newProperty.images.length > 0 && `(${newProperty.images.length} uploaded)`}
+                  </label>
 
-                  {/* Preset Image & Type Chips */}
-                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
-                    {[
-                      { label: '🏡 Modern Villa (Karen)', url: 'https://images.unsplash.com/photo-1613977257363-707ba9348227?auto=format&fit=crop&w=1200&q=80', title: 'Skyline Modern Luxury Villa', loc: 'Karen, Nairobi', type: 'Luxury Villa', price: '850000' },
-                      { label: '🌊 Beachfront Penthouse (Nyali)', url: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=1200&q=80', title: 'Oceanfront Glass Penthouse', loc: 'Nyali Beach, Mombasa', type: 'Penthouse', price: '620000' },
-                      { label: '🌳 Suburban Residence (Runda)', url: 'https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=1200&q=80', title: 'Executive Suburban Residence', loc: 'Runda Mimosa, Nairobi', type: 'Family Home', price: '740000' },
-                      { label: '🏙️ High-Rise Duplex (Westlands)', url: 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?auto=format&fit=crop&w=1200&q=80', title: 'Urban High-Rise Investment Duplex', loc: 'Westlands, Nairobi', type: 'Luxury Apartment', price: '380000' },
-                    ].map((preset, idx) => (
-                      <button
-                        key={idx}
-                        type="button"
-                        onClick={() => {
-                          setNewProperty((prev) => ({
-                            ...prev,
-                            title: prev.title || preset.title,
-                            location: prev.location || preset.loc,
-                            price: prev.price || preset.price,
-                            property_type: preset.type,
-                            image_url: preset.url,
-                          }));
-                        }}
-                        style={{
-                          padding: '5px 10px',
-                          borderRadius: '6px',
-                          backgroundColor: newProperty.image_url === preset.url ? '#EEF2FF' : '#F8FAFC',
-                          border: newProperty.image_url === preset.url ? '1px solid #6366F1' : '1px solid #E2E8F0',
-                          color: newProperty.image_url === preset.url ? '#4338CA' : '#475569',
-                          fontSize: '11px',
-                          fontWeight: '600',
-                          cursor: 'pointer',
-                        }}
-                      >
-                        {preset.label}
-                      </button>
-                    ))}
-                  </div>
+                  {/* Drag-and-Drop / Click File Upload Dropzone */}
+                  <label
+                    htmlFor="property-photo-upload-input"
+                    style={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: '8px',
+                      padding: '24px 16px',
+                      border: '2px dashed #CBD5E1',
+                      borderRadius: '12px',
+                      backgroundColor: '#F8FAFC',
+                      cursor: 'pointer',
+                      transition: 'border-color 0.2s',
+                    }}
+                  >
+                    <div
+                      style={{
+                        width: '44px',
+                        height: '44px',
+                        borderRadius: '50%',
+                        backgroundColor: '#EEF2FF',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    >
+                      <UploadCloud size={24} color="#4F46E5" />
+                    </div>
+                    <div style={{ textAlign: 'center' }}>
+                      <span style={{ fontSize: '13px', fontWeight: '700', color: '#1E293B' }}>
+                        Click to browse or drag photos here
+                      </span>
+                      <p style={{ margin: '4px 0 0', fontSize: '12px', color: '#64748B' }}>
+                        Select one or more images from your device (JPG, PNG, WebP)
+                      </p>
+                    </div>
+                    <input
+                      id="property-photo-upload-input"
+                      type="file"
+                      multiple
+                      accept="image/*"
+                      onChange={handlePhotoFilesSelected}
+                      style={{ display: 'none' }}
+                    />
+                  </label>
 
-                  <input
-                    type="url"
-                    placeholder="https://images.unsplash.com/..."
-                    value={newProperty.image_url}
-                    onChange={(e) =>
-                      setNewProperty({ ...newProperty, image_url: e.target.value })
-                    }
-                    style={styles.inputField}
-                  />
+                  {/* Uploaded Photos Preview Thumbnails */}
+                  {newProperty.images && newProperty.images.length > 0 && (
+                    <div style={{ marginTop: '12px' }}>
+                      <div style={{ fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '8px' }}>
+                        Selected Photos ({newProperty.images.length}) — First image will be used as the primary cover:
+                      </div>
+                      <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+                        {newProperty.images.map((imgSrc, idx) => (
+                          <div
+                            key={idx}
+                            style={{
+                              position: 'relative',
+                              width: '92px',
+                              height: '68px',
+                              borderRadius: '8px',
+                              overflow: 'hidden',
+                              border: idx === 0 ? '2px solid #4F46E5' : '1px solid #CBD5E1',
+                              boxShadow: '0 2px 4px rgba(0,0,0,0.06)',
+                            }}
+                          >
+                            <img
+                              src={imgSrc}
+                              alt={`Property upload ${idx + 1}`}
+                              style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                            />
+                            {idx === 0 && (
+                              <span
+                                style={{
+                                  position: 'absolute',
+                                  bottom: 2,
+                                  left: 2,
+                                  backgroundColor: '#4F46E5',
+                                  color: '#FFFFFF',
+                                  fontSize: '8px',
+                                  fontWeight: '700',
+                                  padding: '1px 4px',
+                                  borderRadius: '3px',
+                                }}
+                              >
+                                Cover
+                              </span>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleRemovePhoto(idx)}
+                              style={{
+                                position: 'absolute',
+                                top: 2,
+                                right: 2,
+                                width: '18px',
+                                height: '18px',
+                                borderRadius: '50%',
+                                backgroundColor: 'rgba(15, 23, 42, 0.8)',
+                                color: '#FFFFFF',
+                                border: 'none',
+                                display: 'flex',
+                                alignItems: 'center',
+                                justifyContent: 'center',
+                                cursor: 'pointer',
+                              }}
+                              title="Remove photo"
+                            >
+                              <X size={11} />
+                            </button>
+                          </div>
+                        ))}
+
+                        <label
+                          htmlFor="property-photo-add-more"
+                          style={{
+                            width: '92px',
+                            height: '68px',
+                            borderRadius: '8px',
+                            border: '1px dashed #94A3B8',
+                            backgroundColor: '#F1F5F9',
+                            display: 'flex',
+                            flexDirection: 'column',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '4px',
+                            cursor: 'pointer',
+                            fontSize: '11px',
+                            fontWeight: '600',
+                            color: '#475569',
+                          }}
+                          title="Add more photos"
+                        >
+                          <Plus size={16} color="#4F46E5" />
+                          <span>Add More</span>
+                          <input
+                            id="property-photo-add-more"
+                            type="file"
+                            multiple
+                            accept="image/*"
+                            onChange={handlePhotoFilesSelected}
+                            style={{ display: 'none' }}
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <div style={{ ...styles.formCol, gridColumn: 'span 2' }}>
