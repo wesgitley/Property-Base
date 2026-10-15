@@ -807,10 +807,6 @@ export default function App() {
                         />
                       </div>
 
-                      <p style={styles.helperText}>
-                        * Each backup code can only be used <strong>once</strong>. When you use your last code, a fresh set will be provisioned automatically.
-                      </p>
-
                       <button
                         type="submit"
                         disabled={loading || !backupCodeInput.trim()}
