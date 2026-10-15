@@ -322,17 +322,6 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
     );
   };
 
-  const handleClearPortfolio = () => {
-    if (!window.confirm('Clear all listings and offers for this account to test clean state?')) return;
-    setListings([]);
-    setOffers([]);
-    try {
-      localStorage.removeItem(storageKeyListings);
-      localStorage.removeItem(storageKeyOffers);
-    } catch (e) {}
-    showToast('success', 'Portfolio cleared to empty state.');
-  };
-
   // ── HANDLERS: LISTINGS ────────────────────────────────────────────────────
   const handleViewProperty = (property) => {
     setSelectedProperty(property);
@@ -638,31 +627,6 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
             >
               <ShieldCheck size={15} />
               <span>SOC Control Room</span>
-            </button>
-          )}
-
-          {listings.length > 0 && isSidebarOpen && (
-            <button
-              onClick={handleClearPortfolio}
-              style={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: '6px',
-                padding: '6px 10px',
-                backgroundColor: 'transparent',
-                color: '#94A3B8',
-                border: '1px dashed #334155',
-                borderRadius: '6px',
-                fontSize: '11px',
-                cursor: 'pointer',
-                marginBottom: '8px',
-                width: '100%',
-                justifyContent: 'center',
-              }}
-              title="Clear all listings to test clean empty state"
-            >
-              <Trash2 size={13} />
-              <span>Reset to Empty State</span>
             </button>
           )}
 
@@ -1273,6 +1237,31 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                             >
                               <span>View & Edit</span>
                               <ArrowRight size={15} />
+                            </button>
+
+                            <button
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleDeleteProperty(prop.id);
+                              }}
+                              style={{
+                                display: 'inline-flex',
+                                alignItems: 'center',
+                                gap: '4px',
+                                padding: '8px 10px',
+                                backgroundColor: '#FEF2F2',
+                                color: '#DC2626',
+                                border: '1px solid #FECACA',
+                                borderRadius: '8px',
+                                fontSize: '12px',
+                                fontWeight: '600',
+                                cursor: 'pointer',
+                              }}
+                              title="Delete Listing"
+                            >
+                              <Trash2 size={13} />
+                              <span>Delete</span>
                             </button>
                           </div>
                         </div>
