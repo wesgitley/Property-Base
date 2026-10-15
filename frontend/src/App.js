@@ -56,7 +56,9 @@ export default function App() {
   const [forgotEmail, setForgotEmail] = useState('');
   const [resetCode, setResetCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [forgotMode, setForgotMode] = useState('request'); // 'request' | 'reset'
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [resetToken, setResetToken] = useState(null);
+  const [forgotMode, setForgotMode] = useState('request'); // 'request' | 'verify' | 'new_password'
 
   // Authenticated state
   const [authenticatedUser, setAuthenticatedUser] = useState(null);
@@ -69,10 +71,27 @@ export default function App() {
 
   const clearMessages = () => setStatusMessage(null);
 
+  // Password complexity helper (uppercase, lowercase, number, special character, 8+ chars)
+  const validatePasswordComplexity = (pwd) => {
+    if (!pwd || pwd.length < 8) return 'Password must be at least 8 characters long.';
+    if (!/[A-Z]/.test(pwd)) return 'Password must contain at least one uppercase letter (A-Z).';
+    if (!/[a-z]/.test(pwd)) return 'Password must contain at least one lowercase letter (a-z).';
+    if (!/[0-9]/.test(pwd)) return 'Password must contain at least one number (0-9).';
+    if (!/[^A-Za-z0-9]/.test(pwd)) return 'Password must contain at least one special character (e.g. !@#$%^&*).';
+    return null;
+  };
+
   // ── 1. REGISTRATION HANDLER ──────────────────────────────────────────────
   const handleRegister = async (e) => {
     e.preventDefault();
     clearMessages();
+
+    const pwdError = validatePasswordComplexity(regPassword);
+    if (pwdError) {
+      setStatusMessage({ type: 'error', text: pwdError });
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -275,17 +294,17 @@ export default function App() {
       const res = await fetch(`${API_BASE}/auth/forgot-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: forgotEmail }),
+        body: JSON.stringify({ email: forgotEmail.trim() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Error requesting reset.');
 
-      setForgotMode('reset');
+      setForgotMode('verify');
       setStatusMessage({
         type: 'success',
         text: data.dev_code
-          ? `Verification Code: ${data.dev_code} (Enter this code below with your new password)`
-          : 'A 6-digit verification code has been dispatched to your email. Enter it below with your new password.',
+          ? `Verification Code: ${data.dev_code} (Enter this code below to verify)`
+          : 'A 6-digit verification code has been dispatched to your email. Enter it below to verify.',
       });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
@@ -294,24 +313,77 @@ export default function App() {
     }
   };
 
-  // ── 5. RESET PASSWORD (STEP 2: SUBMIT CODE & NEW PASSWORD) ──────────────
+  // ── 4B. FORGOT PASSWORD (STEP 2: CONFIRM VERIFICATION CODE) ──────────────
+  const handleVerifyResetCode = async (e) => {
+    e.preventDefault();
+    clearMessages();
+
+    if (!resetCode.trim()) {
+      setStatusMessage({ type: 'error', text: 'Please enter the 6-digit verification code.' });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/verify-reset-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: forgotEmail.trim(),
+          verification_code: resetCode.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Verification code does not match.');
+
+      setResetToken(data.reset_token || null);
+      setForgotMode('new_password');
+      setStatusMessage({
+        type: 'success',
+        text: 'Code confirmed successfully! Please enter your new different password below.',
+      });
+    } catch (err) {
+      setStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── 5. RESET PASSWORD (STEP 3: SUBMIT NEW DIFFERENT PASSWORD) ─────────────
   const handleResetPassword = async (e) => {
     e.preventDefault();
     clearMessages();
-    setLoading(true);
 
+    if (!newPassword) {
+      setStatusMessage({ type: 'error', text: 'Please enter a new password.' });
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setStatusMessage({ type: 'error', text: 'New passwords do not match. Please re-enter confirm password.' });
+      return;
+    }
+
+    const pwdErr = validatePasswordComplexity(newPassword);
+    if (pwdErr) {
+      setStatusMessage({ type: 'error', text: pwdErr });
+      return;
+    }
+
+    setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/auth/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: forgotEmail,
+          email: forgotEmail.trim(),
           verification_code: resetCode.trim(),
+          reset_token: resetToken,
           new_password: newPassword,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Failed to reset password.');
+      if (!res.ok) throw new Error(data.detail || 'Failed to update password.');
 
       // Return to login with notification
       setActiveTab('login');
@@ -319,9 +391,11 @@ export default function App() {
       setForgotMode('request');
       setResetCode('');
       setNewPassword('');
+      setConfirmPassword('');
+      setResetToken(null);
       setStatusMessage({
         type: 'success',
-        text: 'Password successfully reset! All existing sessions have been terminated. Please sign in with your new password.',
+        text: 'Password updated successfully! Please sign in with your new password.',
       });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
@@ -745,6 +819,10 @@ export default function App() {
                     />
                   </div>
 
+                  <p style={{ fontSize: '11px', color: '#64748B', marginTop: '-10px', marginBottom: '14px', lineHeight: '16px' }}>
+                    * Password must be a combination of uppercase letters, lowercase letters, a number, and a special character (min. 8 characters).
+                  </p>
+
                   <button
                     type="submit"
                     disabled={loading}
@@ -914,16 +992,19 @@ export default function App() {
                       <RefreshCw size={28} color="#4F46E5" />
                     </div>
                     <h2 style={styles.formHeading}>
-                      {forgotMode === 'request' ? 'Reset Your Password' : 'Enter Verification Code'}
+                      {forgotMode === 'request' && 'Reset Your Password'}
+                      {forgotMode === 'verify' && 'Verify Verification Code'}
+                      {forgotMode === 'new_password' && 'Update Your Password'}
                     </h2>
                     <p style={styles.formSubheading}>
-                      {forgotMode === 'request'
-                        ? 'Enter your registered email to receive a 6-digit verification code.'
-                        : 'Enter the 6-digit code received and choose your new password.'}
+                      {forgotMode === 'request' && 'Enter your registered email to receive a 6-digit verification code.'}
+                      {forgotMode === 'verify' && `Enter the 6-digit code received in your email to verify your identity.`}
+                      {forgotMode === 'new_password' && 'Enter a new different password meeting the security criteria below.'}
                     </p>
                   </div>
 
-                  {forgotMode === 'request' ? (
+                  {/* STEP 1: REQUEST VERIFICATION CODE */}
+                  {forgotMode === 'request' && (
                     <form onSubmit={handleRequestPasswordReset}>
                       <div style={styles.inputGroup}>
                         <span style={styles.inputIcon}><Mail size={18} color="#6366F1" /></span>
@@ -945,8 +1026,17 @@ export default function App() {
                         {loading ? 'Sending Code...' : 'SEND 6-DIGIT CODE'}
                       </button>
                     </form>
-                  ) : (
-                    <form onSubmit={handleResetPassword}>
+                  )}
+
+                  {/* STEP 2: VERIFY CODE MATCHES */}
+                  {forgotMode === 'verify' && (
+                    <form onSubmit={handleVerifyResetCode}>
+                      {forgotEmail && (
+                        <div style={styles.infoBanner}>
+                          Verification code sent to: <strong>{forgotEmail}</strong>
+                        </div>
+                      )}
+
                       <div style={styles.inputGroup}>
                         <span style={styles.inputIcon}><KeyRound size={18} color="#6366F1" /></span>
                         <input
@@ -955,8 +1045,54 @@ export default function App() {
                           maxLength={6}
                           placeholder="6-Digit Verification Code"
                           value={resetCode}
-                          onChange={(e) => setResetCode(e.target.value)}
+                          onChange={(e) => setResetCode(e.target.value.trim())}
                           style={{ ...styles.textInput, letterSpacing: '4px', fontWeight: 'bold' }}
+                        />
+                      </div>
+
+                      <p style={styles.helperText}>
+                        * Enter the 6-digit verification code received in your email and click Verify Code.
+                      </p>
+
+                      <button
+                        type="submit"
+                        disabled={loading || !resetCode.trim()}
+                        style={loading || !resetCode.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
+                      >
+                        {loading ? 'Verifying Code...' : 'VERIFY CODE'}
+                      </button>
+
+                      <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
+                        <button
+                          type="button"
+                          onClick={handleRequestPasswordReset}
+                          style={styles.textLink}
+                        >
+                          Resend Code
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setForgotMode('request'); clearMessages(); }}
+                          style={styles.textLink}
+                        >
+                          Change Email
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  {/* STEP 3: UPDATE WITH NEW DIFFERENT PASSWORD */}
+                  {forgotMode === 'new_password' && (
+                    <form onSubmit={handleResetPassword}>
+                      <div style={styles.inputGroup}>
+                        <span style={styles.inputIcon}><Lock size={18} color="#6366F1" /></span>
+                        <input
+                          type="password"
+                          required
+                          placeholder="New Password"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          style={styles.textInput}
                         />
                       </div>
 
@@ -965,11 +1101,33 @@ export default function App() {
                         <input
                           type="password"
                           required
-                          placeholder="New Secure Password"
-                          value={newPassword}
-                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="Confirm New Password"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
                           style={styles.textInput}
                         />
+                      </div>
+
+                      {/* Real-time Password Requirements Checklist */}
+                      <div style={{ backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '10px 14px', marginBottom: '18px', fontSize: '11px', color: '#475569' }}>
+                        <div style={{ fontWeight: '600', marginBottom: '6px', color: '#1E293B' }}>Required Password Combination:</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+                          <span style={{ color: newPassword.length >= 8 ? '#16A34A' : '#64748B' }}>
+                            {newPassword.length >= 8 ? '✓' : '•'} 8+ characters
+                          </span>
+                          <span style={{ color: /[A-Z]/.test(newPassword) ? '#16A34A' : '#64748B' }}>
+                            {/[A-Z]/.test(newPassword) ? '✓' : '•'} Uppercase letter (A-Z)
+                          </span>
+                          <span style={{ color: /[a-z]/.test(newPassword) ? '#16A34A' : '#64748B' }}>
+                            {/[a-z]/.test(newPassword) ? '✓' : '•'} Lowercase letter (a-z)
+                          </span>
+                          <span style={{ color: /[0-9]/.test(newPassword) ? '#16A34A' : '#64748B' }}>
+                            {/[0-9]/.test(newPassword) ? '✓' : '•'} Number (0-9)
+                          </span>
+                          <span style={{ color: /[^A-Za-z0-9]/.test(newPassword) ? '#16A34A' : '#64748B', gridColumn: 'span 2' }}>
+                            {/[^A-Za-z0-9]/.test(newPassword) ? '✓' : '•'} Special character (!@#$%^&*)
+                          </span>
+                        </div>
                       </div>
 
                       <button
@@ -977,7 +1135,7 @@ export default function App() {
                         disabled={loading}
                         style={loading ? styles.primaryBtnDisabled : styles.primaryBtn}
                       >
-                        {loading ? 'Updating Password...' : 'RESET PASSWORD & TERMINATE SESSIONS'}
+                        {loading ? 'Updating Password...' : 'RESET PASSWORD'}
                       </button>
                     </form>
                   )}
@@ -986,7 +1144,7 @@ export default function App() {
                     Remembered your password?{' '}
                     <button
                       type="button"
-                      onClick={() => { setActiveTab('login'); clearMessages(); }}
+                      onClick={() => { setActiveTab('login'); clearMessages(); setForgotMode('request'); }}
                       style={styles.textLink}
                     >
                       Back to Sign In

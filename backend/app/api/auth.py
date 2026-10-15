@@ -7,6 +7,7 @@ import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+import re
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy.orm import Session
 
@@ -14,6 +15,7 @@ from app.core.database import get_db
 from app.core.security import (
     create_access_token,
     create_pre_auth_token,
+    create_reset_token,
     decode_token,
     get_password_hash,
     verify_password,
@@ -52,6 +54,7 @@ from app.schemas import (
     UserResponse,
     VerifyEmailOTPRequest,
     VerifyRecoveryLink,
+    VerifyResetCodeRequest,
 )
 from app.services.baseline_store import BaselineStore
 from app.services.email_service import (
@@ -63,6 +66,43 @@ from app.services.email_service import (
 from app.services.risk_engine import RiskEngine
 
 logger = logging.getLogger(__name__)
+
+
+def validate_password_complexity(password: str) -> None:
+    """
+    Ensures password is a combination of:
+    - Minimum 8 characters
+    - At least one uppercase letter (A-Z)
+    - At least one lowercase letter (a-z)
+    - At least one number (0-9)
+    - At least one special character
+    """
+    if not password or len(password) < 8:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must be at least 8 characters long.",
+        )
+    if not re.search(r"[A-Z]", password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain at least one uppercase letter (A-Z).",
+        )
+    if not re.search(r"[a-z]", password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain at least one lowercase letter (a-z).",
+        )
+    if not re.search(r"[0-9]", password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain at least one number (0-9).",
+        )
+    if not re.search(r"[^A-Za-z0-9]", password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Password must contain at least one special character (e.g. !@#$%^&*).",
+        )
+
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -90,7 +130,8 @@ def register(user_in: UserRegister, db: Session = Depends(get_db)) -> Any:
             detail="A user with this username already exists.",
         )
 
-    # 3. Hash password securely
+    # 3. Enforce password complexity and hash password securely
+    validate_password_complexity(user_in.password)
     hashed_pwd = get_password_hash(user_in.password)
 
     # 4. Generate 8 unguessable single-use backup recovery codes (e.g. A8K2-9P1Z)
@@ -791,15 +832,10 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -
     return res_data
 
 
-@router.post("/reset-password")
-def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> Any:
+@router.post("/verify-reset-code")
+def verify_reset_code(req: VerifyResetCodeRequest, db: Session = Depends(get_db)) -> Any:
     """
-    Step 2: Reset Password
-    Input: email, verification_code, new_password
-    Actions:
-      - Verify code against `MFAOTP` (expiration, attempts, is_used).
-      - Update hashed_password in `User`.
-      - Invalidate/revoke ALL active sessions (is_revoked=True in `UserSession`).
+    Step 2: Verify verification code entered by user matches the one sent to their email.
     """
     user = db.query(User).filter(User.email == req.email.lower()).first()
     if not user:
@@ -822,7 +858,7 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
     if not otp_record:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No valid or unexpired verification code found. Please request a new one.",
+            detail="No valid or unexpired verification code found. Please request a new code.",
         )
 
     otp_record.attempts += 1
@@ -837,11 +873,77 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
         db.commit()
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid verification code. {5 - otp_record.attempts} attempt(s) remaining.",
+            detail=f"Verification code does not match. {5 - otp_record.attempts} attempt(s) remaining.",
         )
 
-    # Code is valid -> Mark used
-    otp_record.is_used = True
+    db.commit()
+    reset_token = create_reset_token(user.user_id, user.email, expires_minutes=15)
+    return {
+        "status": "success",
+        "message": "Verification code verified successfully! You may now set your new password.",
+        "reset_token": reset_token,
+    }
+
+
+@router.post("/reset-password")
+def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> Any:
+    """
+    Step 3: Update existing password with a new different password.
+    Requires password complexity (combination of uppercase, lowercase, number, special character).
+    """
+    user = db.query(User).filter(User.email == req.email.lower()).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User account not found.")
+
+    # 1. Enforce password complexity
+    validate_password_complexity(req.new_password)
+
+    # 2. Enforce that new password is different from current existing password
+    if verify_password(req.new_password, user.hashed_password):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Your new password must be different from your existing password.",
+        )
+
+    # 3. Authenticate via reset_token or verification_code
+    now = datetime.now(timezone.utc)
+    authenticated = False
+
+    if req.reset_token:
+        try:
+            payload = decode_token(req.reset_token)
+            if payload.get("type") == "password_reset" and payload.get("email") == user.email:
+                authenticated = True
+        except Exception:
+            pass
+
+    if not authenticated and req.verification_code:
+        hashed_code = hash_secret_code(req.verification_code)
+        otp_record = (
+            db.query(MFAOTP)
+            .filter(
+                MFAOTP.user_id == user.user_id,
+                MFAOTP.is_used == False,
+                MFAOTP.expires_at > now,
+            )
+            .order_by(MFAOTP.created_at.desc())
+            .first()
+        )
+        if otp_record and otp_record.otp_code_hash == hashed_code:
+            authenticated = True
+            otp_record.is_used = True
+
+    if not authenticated:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Session or verification code has expired. Please verify your code again.",
+        )
+
+    # Invalidate all unused OTPs for this user
+    db.query(MFAOTP).filter(
+        MFAOTP.user_id == user.user_id,
+        MFAOTP.is_used == False,
+    ).update({"is_used": True})
 
     # Update password
     user.hashed_password = get_password_hash(req.new_password)
@@ -849,19 +951,18 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
     user.failed_login_attempts = 0
     user.locked_until = None
 
-    # ANTI-ATO HARDENING: Invalidate / Revoke ALL active sessions for this user
+    # Invalidate / Revoke ALL active sessions for this user
     db.query(UserSession).filter(UserSession.user_id == user.user_id).update({
         "is_revoked": True,
         "status": SessionStatus.REVOKED,
     })
 
     db.commit()
-
     logger.info(f"Password successfully reset for {user.email}. All existing sessions revoked.")
 
     return {
         "status": "success",
-        "message": "Password successfully reset. All existing sessions have been terminated. Please log in with your new password.",
+        "message": "Password successfully updated! Please sign in with your new password.",
     }
 
 
