@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   Home,
   Building2,
@@ -209,6 +209,65 @@ const INITIAL_OFFERS = [
   },
 ];
 
+// ── SYNTHETIC BUYERS POOL (FOR REALISTIC OFFER GENERATION) ───────────────────
+const SYNTHETIC_BUYER_POOL = [
+  {
+    name: 'Sarah Wanjiku Kamau',
+    avatar: 'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?auto=format&fit=crop&w=256&q=80',
+    email: 'sarah.kamau@ke-invest.com',
+    phone: '+254 712 445 566',
+    financing_type: 'Pre-Approved Conventional Mortgage (NCBA Bank Kenya)',
+    contingencies: '14-day property inspection & clean title deed verification',
+    discount: 0.96, // 96% of listing price
+    message: (title, location) =>
+      `Hello! I have been actively searching for a residence like "${title}" in ${location}. My mortgage pre-approval is certified up to asking price. Could we schedule an in-person viewing this Saturday?`,
+  },
+  {
+    name: 'David Ochieng Otieno',
+    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?auto=format&fit=crop&w=256&q=80',
+    email: 'david.otieno@safari-tech.co',
+    phone: '+254 722 889 900',
+    financing_type: 'Certified Cashier Funds / Unconditional Cash',
+    contingencies: '7-day expedited title search; No financing contingency',
+    discount: 0.94, // 94% cash offer
+    message: (title, location) =>
+      `Greetings. We are cash buyers representing a private family trust looking to acquire "${title}". We are ready to place a 15% escrow deposit immediately and close within 14 calendar days.`,
+  },
+  {
+    name: 'Elena Rostova',
+    avatar: 'https://images.unsplash.com/photo-1580489944761-15a19d654956?auto=format&fit=crop&w=256&q=80',
+    email: 'elena.rostova@globalcapital.ch',
+    phone: '+41 79 123 4567',
+    financing_type: 'Private Offshore Wealth Transfer (UBS Zurich)',
+    contingencies: 'Standard diplomatic residency verification & building inspection',
+    discount: 0.98, // 98% of listing price
+    message: (title, location) =>
+      `Dear Seller, I am relocating to Nairobi for a diplomatic assignment and your listing "${title}" in ${location} is ideal. I am submitting this offer with certified proof of liquid funds.`,
+  },
+  {
+    name: 'Michael Mwangi Chege',
+    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?auto=format&fit=crop&w=256&q=80',
+    email: 'michael.mwangi@kenya-executives.org',
+    phone: '+254 733 556 778',
+    financing_type: 'Bank Guarantee & 25% Upfront Down Payment (Standard Chartered)',
+    contingencies: 'Professional property appraisal & 21-day escrow period',
+    discount: 0.95,
+    message: (title, location) =>
+      `Good day. I reviewed the listing specifications for "${title}". I would like to submit a formal purchase proposal with a 25% earnest deposit upon signing of the sale agreement.`,
+  },
+  {
+    name: 'Amina Noor Hassan',
+    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=256&q=80',
+    email: 'amina.hassan@coastalliving.ke',
+    phone: '+254 701 998 877',
+    financing_type: 'Islamic Sharia-Compliant Home Financing (First Community / Gulf African Bank)',
+    contingencies: 'Standard 10-day valuation & boundary survey clearance',
+    discount: 0.97,
+    message: (title, location) =>
+      `Assalamu Alaikum. I am interested in purchasing "${title}". Our pre-approved Sharia-compliant facility is finalized and ready for release upon contract execution.`,
+  },
+];
+
 // ── UTILITIES ────────────────────────────────────────────────────────────────
 const formatCurrency = (amount) =>
   new Intl.NumberFormat('en-US', {
@@ -218,14 +277,60 @@ const formatCurrency = (amount) =>
   }).format(amount);
 
 // ── MAIN SELLER DASHBOARD COMPONENT ──────────────────────────────────────────
-export default function SellerDashboard({ user, onLogout }) {
+export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
   // Navigation & layout state
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [activeNav, setActiveNav] = useState('home');
 
-  // Listings & Offers state
-  const [listings, setListings] = useState(INITIAL_LISTINGS);
-  const [offers, setOffers] = useState(INITIAL_OFFERS);
+  // Identify user storage key so each account has isolated listings & offers
+  const userKey = user?.email || user?.username || 'new_seller';
+  const storageKeyListings = `pb_listings_${userKey}`;
+  const storageKeyOffers = `pb_offers_${userKey}`;
+
+  // Listings state: New users start with an EMPTY portfolio ([]), or load previously posted listings
+  const [listings, setListings] = useState(() => {
+    try {
+      const saved = localStorage.getItem(storageKeyListings);
+      if (saved !== null) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error('Failed to load listings from storage', e);
+    }
+    // Brand new user starts with 0 listings!
+    return [];
+  });
+
+  // Offers state: New users start with 0 offers ([]), or load previously received offers
+  const [offers, setOffers] = useState(() => {
+    try {
+      const saved = localStorage.getItem(storageKeyOffers);
+      if (saved !== null) {
+        return JSON.parse(saved);
+      }
+    } catch (e) {
+      console.error('Failed to load offers from storage', e);
+    }
+    // Brand new user starts with 0 offers!
+    return [];
+  });
+
+  // Persist user-specific listings & offers across sessions
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKeyListings, JSON.stringify(listings));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [listings, storageKeyListings]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKeyOffers, JSON.stringify(offers));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [offers, storageKeyOffers]);
 
   // Filters & Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -261,7 +366,79 @@ export default function SellerDashboard({ user, onLogout }) {
 
   const showToast = (type, text) => {
     setFeedback({ type, text });
-    setTimeout(() => setFeedback(null), 4000);
+    setTimeout(() => setFeedback(null), 4500);
+  };
+
+  // ── SYNTHETIC OFFER GENERATOR ─────────────────────────────────────────────
+  // Generates realistic verified prospective buyer offers tailored to a property
+  const generateSyntheticOffers = (targetProperty, count = 1) => {
+    if (!targetProperty) return;
+
+    // Pick random synthetic buyers from the pool
+    const shuffled = [...SYNTHETIC_BUYER_POOL].sort(() => 0.5 - Math.random());
+    const selectedBuyers = shuffled.slice(0, count);
+
+    const newOffers = selectedBuyers.map((buyer, idx) => {
+      // Calculate realistic offer price rounded to nearest $5,000
+      const calculatedAmt = Math.round((Number(targetProperty.price) * buyer.discount) / 5000) * 5000;
+      return {
+        id: `off-${Date.now().toString().slice(-5)}-${idx + 1}-${Math.floor(Math.random() * 900 + 100)}`,
+        property_id: targetProperty.id,
+        property_title: targetProperty.title,
+        property_image: targetProperty.image_url,
+        client_name: buyer.name,
+        client_avatar: buyer.avatar,
+        client_email: buyer.email,
+        client_phone: buyer.phone,
+        offer_amount: calculatedAmt,
+        list_price: Number(targetProperty.price),
+        date_received: 'Just now',
+        message_preview: buyer.message(targetProperty.title, targetProperty.location),
+        financing_type: buyer.financing_type,
+        contingencies: buyer.contingencies,
+        status: 'PENDING',
+      };
+    });
+
+    // Prepend new offers
+    setOffers((prev) => [...newOffers, ...prev]);
+
+    // Update target property inquiry and view stats
+    setListings((prev) =>
+      prev.map((p) =>
+        p.id === targetProperty.id
+          ? {
+              ...p,
+              inquiries_count: (p.inquiries_count || 0) + newOffers.length,
+              views_count: (p.views_count || 0) + Math.floor(Math.random() * 20) + 12,
+            }
+          : p
+      )
+    );
+
+    const first = newOffers[0];
+    showToast(
+      'success',
+      `✨ New buyer offer of ${formatCurrency(first.offer_amount)} received from ${first.client_name} for "${targetProperty.title}"!`
+    );
+  };
+
+  // Helpers for testing / demo
+  const handleLoadSampleListings = () => {
+    setListings(INITIAL_LISTINGS);
+    setOffers(INITIAL_OFFERS);
+    showToast('success', 'Loaded sample luxury listings and client offers.');
+  };
+
+  const handleClearPortfolio = () => {
+    if (!window.confirm('Clear all listings and offers for this account to test clean state?')) return;
+    setListings([]);
+    setOffers([]);
+    try {
+      localStorage.removeItem(storageKeyListings);
+      localStorage.removeItem(storageKeyOffers);
+    } catch (e) {}
+    showToast('success', 'Portfolio cleared to empty state.');
   };
 
   // ── HANDLERS: LISTINGS ────────────────────────────────────────────────────
@@ -297,9 +474,11 @@ export default function SellerDashboard({ user, onLogout }) {
   const handleDeleteProperty = (id) => {
     if (!window.confirm('Are you sure you want to remove this property listing?')) return;
     setListings((prev) => prev.filter((p) => p.id !== id));
+    // Also remove associated offers
+    setOffers((prev) => prev.filter((o) => o.property_id !== id));
     setSelectedProperty(null);
     setEditFormData(null);
-    showToast('success', 'Property listing removed.');
+    showToast('success', 'Property listing and associated offers removed.');
   };
 
   const handleCreateProperty = (e) => {
@@ -319,11 +498,12 @@ export default function SellerDashboard({ user, onLogout }) {
       image_url:
         newProperty.image_url.trim() ||
         'https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=1200&q=80',
-      views_count: 0,
+      views_count: Math.floor(Math.random() * 25) + 14,
       inquiries_count: 0,
       created_at: 'Just now',
     };
 
+    // 1. Add new listing to portfolio
     setListings((prev) => [createdItem, ...prev]);
     setIsAddModalOpen(false);
     setNewProperty({
@@ -338,7 +518,12 @@ export default function SellerDashboard({ user, onLogout }) {
       image_url: '',
       description: '',
     });
-    showToast('success', `New listing "${createdItem.title}" published to Property Base!`);
+    showToast('success', `Listing "${createdItem.title}" published! Attracting prospective buyer interest...`);
+
+    // 2. Automatically generate synthetic buyer offers for this newly created listing!
+    setTimeout(() => {
+      generateSyntheticOffers(createdItem, 1);
+    }, 1500);
   };
 
   // ── HANDLERS: OFFERS ──────────────────────────────────────────────────────
@@ -513,12 +698,63 @@ export default function SellerDashboard({ user, onLogout }) {
             {isSidebarOpen && (
               <div style={styles.userText}>
                 <div style={styles.userName}>
-                  {user?.first_name ? `${user.first_name} ${user.last_name || ''}` : 'Wesley Mutisya'}
+                  {user?.first_name ? `${user.first_name} ${user.last_name || ''}` : user?.email || 'Seller'}
                 </div>
-                <div style={styles.userRoleBadge}>Verified Seller</div>
+                <div style={styles.userRoleBadge}>{user?.role === 'ADMIN' ? 'Admin (Seller View)' : 'Verified Seller'}</div>
               </div>
             )}
           </div>
+
+          {onSwitchToAdmin && isSidebarOpen && (
+            <button
+              onClick={onSwitchToAdmin}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '8px',
+                padding: '8px 12px',
+                backgroundColor: '#1E293B',
+                color: '#38BDF8',
+                border: '1px solid #334155',
+                borderRadius: '8px',
+                fontSize: '12px',
+                fontWeight: '600',
+                cursor: 'pointer',
+                marginBottom: '8px',
+                width: '100%',
+                justifyContent: 'center',
+              }}
+              title="Return to SOC Control Room"
+            >
+              <ShieldCheck size={15} />
+              <span>SOC Control Room</span>
+            </button>
+          )}
+
+          {listings.length > 0 && isSidebarOpen && (
+            <button
+              onClick={handleClearPortfolio}
+              style={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: '6px',
+                padding: '6px 10px',
+                backgroundColor: 'transparent',
+                color: '#94A3B8',
+                border: '1px dashed #334155',
+                borderRadius: '6px',
+                fontSize: '11px',
+                cursor: 'pointer',
+                marginBottom: '8px',
+                width: '100%',
+                justifyContent: 'center',
+              }}
+              title="Clear all listings to test clean empty state"
+            >
+              <Trash2 size={13} />
+              <span>Reset to Empty State</span>
+            </button>
+          )}
 
           <button
             onClick={onLogout}
@@ -901,15 +1137,40 @@ export default function SellerDashboard({ user, onLogout }) {
               {/* Listings Grid */}
               {filteredListings.length === 0 ? (
                 <div style={styles.emptyCard}>
-                  <Building2 size={44} color="#94A3B8" />
-                  <h4>No property listings found</h4>
-                  <p>Try clearing your search query or add a new listing to your portfolio.</p>
-                  <button
-                    onClick={() => setIsAddModalOpen(true)}
-                    style={styles.primaryAddBtn}
-                  >
-                    <Plus size={16} /> Add First Listing
-                  </button>
+                  <div style={styles.emptyIconCircle}>
+                    <Building2 size={36} color="#4F46E5" />
+                  </div>
+                  <h4 style={styles.emptyTitle}>
+                    {listings.length === 0
+                      ? 'No Property Listings Yet'
+                      : 'No Matching Listings Found'}
+                  </h4>
+                  <p style={styles.emptyDescription}>
+                    {listings.length === 0
+                      ? 'Your seller portfolio is currently empty. Post your first property listing to showcase your home to prospective buyers and start receiving verified purchase offers.'
+                      : 'No listings match your current search or filter criteria. Try clearing your filters or search terms.'}
+                  </p>
+                  <div style={{ display: 'flex', gap: '12px', marginTop: '12px', flexWrap: 'wrap', justifyContent: 'center' }}>
+                    <button
+                      onClick={() => setIsAddModalOpen(true)}
+                      style={styles.primaryAddBtn}
+                    >
+                      <Plus size={16} /> Post Your First Listing
+                    </button>
+                    {listings.length === 0 && (
+                      <button
+                        onClick={handleLoadSampleListings}
+                        style={{
+                          ...styles.cancelBtn,
+                          fontSize: '13px',
+                          padding: '10px 16px',
+                        }}
+                        title="Load 5 pre-made luxury villas and penthouses to explore"
+                      >
+                        Load Sample Portfolio
+                      </button>
+                    )}
+                  </div>
                 </div>
               ) : (
                 <div style={styles.listingsGrid}>
@@ -971,13 +1232,24 @@ export default function SellerDashboard({ user, onLogout }) {
                             <span>{prop.views_count.toLocaleString()} views</span>
                           </div>
 
-                          <button
-                            onClick={() => handleViewProperty(prop)}
-                            style={styles.viewBtn}
-                          >
-                            <span>View & Edit</span>
-                            <ArrowRight size={15} />
-                          </button>
+                          <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                            <button
+                              onClick={() => generateSyntheticOffers(prop, 1)}
+                              style={styles.simOfferBtn}
+                              title="Generate an incoming buyer offer for this listing"
+                            >
+                              <Sparkles size={14} />
+                              <span>Simulate Offer</span>
+                            </button>
+
+                            <button
+                              onClick={() => handleViewProperty(prop)}
+                              style={styles.viewBtn}
+                            >
+                              <span>View & Edit</span>
+                              <ArrowRight size={15} />
+                            </button>
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -999,30 +1271,72 @@ export default function SellerDashboard({ user, onLogout }) {
                   </p>
                 </div>
 
-                {/* Offer Status Filter Pills */}
-                <div style={styles.statusPillGroup}>
-                  {['ALL', 'PENDING', 'ACCEPTED', 'DECLINED'].map((st) => (
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
+                  {listings.length > 0 && (
                     <button
-                      key={st}
-                      onClick={() => setOfferFilter(st)}
-                      style={
-                        offerFilter === st
-                          ? styles.statusPillActive
-                          : styles.statusPillInactive
-                      }
+                      onClick={() => {
+                        const target = listings[Math.floor(Math.random() * listings.length)];
+                        generateSyntheticOffers(target, 1);
+                      }}
+                      style={styles.simOfferBtn}
+                      title="Simulate an incoming purchase offer for one of your listings"
                     >
-                      {st === 'ALL' ? 'All Offers' : st}
+                      <Sparkles size={14} />
+                      <span>Simulate Offer</span>
                     </button>
-                  ))}
+                  )}
+
+                  {/* Offer Status Filter Pills */}
+                  <div style={styles.statusPillGroup}>
+                    {['ALL', 'PENDING', 'ACCEPTED', 'DECLINED'].map((st) => (
+                      <button
+                        key={st}
+                        onClick={() => setOfferFilter(st)}
+                        style={
+                          offerFilter === st
+                            ? styles.statusPillActive
+                            : styles.statusPillInactive
+                        }
+                      >
+                        {st === 'ALL' ? 'All Offers' : st}
+                      </button>
+                    ))}
+                  </div>
                 </div>
               </div>
 
               {/* Offers List */}
               {filteredOffers.length === 0 ? (
                 <div style={styles.emptyCard}>
-                  <DollarSign size={44} color="#94A3B8" />
-                  <h4>No offers found for this filter</h4>
-                  <p>Inquiries and purchase bids from buyers will appear here in real-time.</p>
+                  <div style={{ ...styles.emptyIconCircle, backgroundColor: '#ECFDF5' }}>
+                    <DollarSign size={36} color="#059669" />
+                  </div>
+                  <h4 style={styles.emptyTitle}>
+                    {offers.length === 0
+                      ? listings.length === 0
+                        ? 'No Offers or Inquiries Yet'
+                        : 'Awaiting Prospective Buyer Offers'
+                      : 'No Offers Matching Filter'}
+                  </h4>
+                  <p style={styles.emptyDescription}>
+                    {offers.length === 0
+                      ? listings.length === 0
+                        ? 'Once you publish a property listing, verified buyers on Property Base will submit formal purchase proposals and inquiries here for your review.'
+                        : 'Your property listings are active! When prospective buyers submit purchase proposals, they will arrive here in real-time. You can also generate a synthetic offer to preview the review workflow.'
+                      : 'No purchase offers match your selected filter tab.'}
+                  </p>
+                  {listings.length > 0 && offers.length === 0 && (
+                    <button
+                      onClick={() => generateSyntheticOffers(listings[0], 1)}
+                      style={{
+                        ...styles.primaryAddBtn,
+                        backgroundColor: '#059669',
+                        marginTop: '12px',
+                      }}
+                    >
+                      <Sparkles size={16} /> Simulate Buyer Offer for "{listings[0].title}"
+                    </button>
+                  )}
                 </div>
               ) : (
                 <div style={styles.offersGrid}>
@@ -1300,7 +1614,48 @@ export default function SellerDashboard({ user, onLogout }) {
                 </div>
 
                 <div style={{ ...styles.formCol, gridColumn: 'span 2' }}>
-                  <label style={styles.fieldLabel}>Photo URL (High Resolution)</label>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6 }}>
+                    <label style={{ ...styles.fieldLabel, margin: 0 }}>Photo URL (High Resolution)</label>
+                    <span style={{ fontSize: 11, color: '#6366F1', fontWeight: '600' }}>Quick Presets (Click to autofill):</span>
+                  </div>
+
+                  {/* Preset Image & Type Chips */}
+                  <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 10 }}>
+                    {[
+                      { label: '🏡 Modern Villa (Karen)', url: 'https://images.unsplash.com/photo-1613977257363-707ba9348227?auto=format&fit=crop&w=1200&q=80', title: 'Skyline Modern Luxury Villa', loc: 'Karen, Nairobi', type: 'Luxury Villa', price: '850000' },
+                      { label: '🌊 Beachfront Penthouse (Nyali)', url: 'https://images.unsplash.com/photo-1512917774080-9991f1c4c750?auto=format&fit=crop&w=1200&q=80', title: 'Oceanfront Glass Penthouse', loc: 'Nyali Beach, Mombasa', type: 'Penthouse', price: '620000' },
+                      { label: '🌳 Suburban Residence (Runda)', url: 'https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=1200&q=80', title: 'Executive Suburban Residence', loc: 'Runda Mimosa, Nairobi', type: 'Family Home', price: '740000' },
+                      { label: '🏙️ High-Rise Duplex (Westlands)', url: 'https://images.unsplash.com/photo-1545324418-cc1a3fa10c00?auto=format&fit=crop&w=1200&q=80', title: 'Urban High-Rise Investment Duplex', loc: 'Westlands, Nairobi', type: 'Luxury Apartment', price: '380000' },
+                    ].map((preset, idx) => (
+                      <button
+                        key={idx}
+                        type="button"
+                        onClick={() => {
+                          setNewProperty((prev) => ({
+                            ...prev,
+                            title: prev.title || preset.title,
+                            location: prev.location || preset.loc,
+                            price: prev.price || preset.price,
+                            property_type: preset.type,
+                            image_url: preset.url,
+                          }));
+                        }}
+                        style={{
+                          padding: '5px 10px',
+                          borderRadius: '6px',
+                          backgroundColor: newProperty.image_url === preset.url ? '#EEF2FF' : '#F8FAFC',
+                          border: newProperty.image_url === preset.url ? '1px solid #6366F1' : '1px solid #E2E8F0',
+                          color: newProperty.image_url === preset.url ? '#4338CA' : '#475569',
+                          fontSize: '11px',
+                          fontWeight: '600',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+
                   <input
                     type="url"
                     placeholder="https://images.unsplash.com/..."
@@ -2656,7 +3011,44 @@ const styles = {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
-    gap: '10px',
+    gap: '12px',
     color: '#64748B',
+  },
+  emptyIconCircle: {
+    width: '68px',
+    height: '68px',
+    borderRadius: '50%',
+    backgroundColor: '#EEF2FF',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: '6px',
+  },
+  emptyTitle: {
+    fontSize: '18px',
+    fontWeight: '700',
+    color: '#0F172A',
+    margin: 0,
+  },
+  emptyDescription: {
+    fontSize: '14px',
+    color: '#64748B',
+    maxWidth: '520px',
+    lineHeight: 1.6,
+    margin: 0,
+  },
+  simOfferBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '6px',
+    padding: '8px 12px',
+    backgroundColor: '#EEF2FF',
+    color: '#4F46E5',
+    border: '1px solid #C7D2FE',
+    borderRadius: '8px',
+    fontSize: '12px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.15s ease',
   },
 };
