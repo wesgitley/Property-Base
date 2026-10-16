@@ -430,7 +430,7 @@ export default function App() {
     setGoogleModalMode(mode);
     if (mode === 'login' && loginEmail) setGoogleEmail(loginEmail);
     else if (mode === 'register' && regEmail) setGoogleEmail(regEmail);
-    else if (!googleEmail) setGoogleEmail('wesley.mutisya@strathmore.edu');
+    else setGoogleEmail('');
     setShowGoogleModal(true);
   };
 
