@@ -20,6 +20,15 @@ import {
 
 const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
 
+const GoogleIcon = () => (
+  <svg width="18" height="18" viewBox="0 0 18 18" style={{ minWidth: 18 }}>
+    <path fill="#4285F4" d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.616z"/>
+    <path fill="#34A853" d="M9 18c2.43 0 4.467-.806 5.956-2.184l-2.908-2.258c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332C2.438 15.983 5.482 18 9 18z"/>
+    <path fill="#FBBC05" d="M3.964 10.707c-.18-.54-.282-1.117-.282-1.707s.102-1.167.282-1.707V4.961H.957C.347 6.175 0 7.55 0 9s.347 2.825.957 4.039l3.007-2.332z"/>
+    <path fill="#EA4335" d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0 5.482 0 2.438 2.017.957 4.961L3.964 7.293C4.672 5.166 6.656 3.58 9 3.58z"/>
+  </svg>
+);
+
 export default function App() {
   // Navigation tabs: 'login' | 'register' | 'mfa' | 'forgot'
   const [activeTab, setActiveTab] = useState('login');
@@ -56,12 +65,23 @@ export default function App() {
   const [forgotEmail, setForgotEmail] = useState('');
   const [resetCode, setResetCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
-  const [forgotMode, setForgotMode] = useState('request'); // 'request' | 'reset'
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [resetToken, setResetToken] = useState(null);
+  const [forgotMode, setForgotMode] = useState('request'); // 'request' | 'verify' | 'new_password'
 
   // Authenticated state
   const [authenticatedUser, setAuthenticatedUser] = useState(null);
   const [accessToken, setAccessToken] = useState('');
   const [adminViewMode, setAdminViewMode] = useState('soc'); // 'soc' | 'seller'
+
+  // Google sign-in modal & password verification state
+  const [showGoogleModal, setShowGoogleModal] = useState(false);
+  const [googleEmail, setGoogleEmail] = useState('');
+  const [googlePassword, setGooglePassword] = useState('');
+  const [googleShowPassword, setGoogleShowPassword] = useState(false);
+  const [googleModalMode, setGoogleModalMode] = useState('login'); // 'login' | 'register'
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleError, setGoogleError] = useState('');
 
   // Status feedback
   const [loading, setLoading] = useState(false);
@@ -69,10 +89,27 @@ export default function App() {
 
   const clearMessages = () => setStatusMessage(null);
 
+  // Password complexity helper (uppercase, lowercase, number, special character, 8+ chars)
+  const validatePasswordComplexity = (pwd) => {
+    if (!pwd || pwd.length < 8) return 'Password must be at least 8 characters long.';
+    if (!/[A-Z]/.test(pwd)) return 'Password must contain at least one uppercase letter (A-Z).';
+    if (!/[a-z]/.test(pwd)) return 'Password must contain at least one lowercase letter (a-z).';
+    if (!/[0-9]/.test(pwd)) return 'Password must contain at least one number (0-9).';
+    if (!/[^A-Za-z0-9]/.test(pwd)) return 'Password must contain at least one special character (e.g. !@#$%^&*).';
+    return null;
+  };
+
   // ── 1. REGISTRATION HANDLER ──────────────────────────────────────────────
   const handleRegister = async (e) => {
     e.preventDefault();
     clearMessages();
+
+    const pwdError = validatePasswordComplexity(regPassword);
+    if (pwdError) {
+      setStatusMessage({ type: 'error', text: pwdError });
+      return;
+    }
+
     setLoading(true);
 
     try {
@@ -253,7 +290,9 @@ export default function App() {
       setMfaMethod('email_otp');
       setStatusMessage({
         type: 'success',
-        text: 'A one-time verification code has been dispatched to your email.',
+        text: data.dev_code
+          ? `One-time code: ${data.dev_code} (Enter this code to access your account)`
+          : 'A one-time verification code has been dispatched to your email.',
       });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
@@ -273,15 +312,17 @@ export default function App() {
       const res = await fetch(`${API_BASE}/auth/forgot-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: forgotEmail }),
+        body: JSON.stringify({ email: forgotEmail.trim() }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Error requesting reset.');
 
-      setForgotMode('reset');
+      setForgotMode('verify');
       setStatusMessage({
         type: 'success',
-        text: 'A 6-digit verification code has been dispatched to your email. Enter it below with your new password.',
+        text: data.dev_code
+          ? `Verification Code: ${data.dev_code} (Enter this code below to verify)`
+          : 'A 6-digit verification code has been dispatched to your email. Enter it below to verify.',
       });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
@@ -290,24 +331,77 @@ export default function App() {
     }
   };
 
-  // ── 5. RESET PASSWORD (STEP 2: SUBMIT CODE & NEW PASSWORD) ──────────────
+  // ── 4B. FORGOT PASSWORD (STEP 2: CONFIRM VERIFICATION CODE) ──────────────
+  const handleVerifyResetCode = async (e) => {
+    e.preventDefault();
+    clearMessages();
+
+    if (!resetCode.trim()) {
+      setStatusMessage({ type: 'error', text: 'Please enter the 6-digit verification code.' });
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/verify-reset-code`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: forgotEmail.trim(),
+          verification_code: resetCode.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Verification code does not match.');
+
+      setResetToken(data.reset_token || null);
+      setForgotMode('new_password');
+      setStatusMessage({
+        type: 'success',
+        text: 'Code confirmed successfully! Please enter your new different password below.',
+      });
+    } catch (err) {
+      setStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // ── 5. RESET PASSWORD (STEP 3: SUBMIT NEW DIFFERENT PASSWORD) ─────────────
   const handleResetPassword = async (e) => {
     e.preventDefault();
     clearMessages();
-    setLoading(true);
 
+    if (!newPassword) {
+      setStatusMessage({ type: 'error', text: 'Please enter a new password.' });
+      return;
+    }
+
+    if (newPassword !== confirmPassword) {
+      setStatusMessage({ type: 'error', text: 'New passwords do not match. Please re-enter confirm password.' });
+      return;
+    }
+
+    const pwdErr = validatePasswordComplexity(newPassword);
+    if (pwdErr) {
+      setStatusMessage({ type: 'error', text: pwdErr });
+      return;
+    }
+
+    setLoading(true);
     try {
       const res = await fetch(`${API_BASE}/auth/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: forgotEmail,
+          email: forgotEmail.trim(),
           verification_code: resetCode.trim(),
+          reset_token: resetToken,
           new_password: newPassword,
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Failed to reset password.');
+      if (!res.ok) throw new Error(data.detail || 'Failed to update password.');
 
       // Return to login with notification
       setActiveTab('login');
@@ -315,15 +409,193 @@ export default function App() {
       setForgotMode('request');
       setResetCode('');
       setNewPassword('');
+      setConfirmPassword('');
+      setResetToken(null);
       setStatusMessage({
         type: 'success',
-        text: 'Password successfully reset! All existing sessions have been terminated. Please sign in with your new password.',
+        text: 'Password updated successfully! Please sign in with your new password.',
       });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
     } finally {
       setLoading(false);
     }
+  };
+
+  // ── 6. GOOGLE SIGN-IN HANDLER & VERIFICATION MODAL ─────────────────────────
+  const handleOpenGoogleModal = (mode = 'login') => {
+    clearMessages();
+    setGoogleError('');
+    setGooglePassword('');
+    setGoogleModalMode(mode);
+    if (mode === 'login' && loginEmail) setGoogleEmail(loginEmail);
+    else if (mode === 'register' && regEmail) setGoogleEmail(regEmail);
+    else setGoogleEmail('');
+    setShowGoogleModal(true);
+  };
+
+  const handleGoogleModalSubmit = async (e) => {
+    e.preventDefault();
+    setGoogleError('');
+
+    if (!googleEmail || !googleEmail.trim()) {
+      setGoogleError('Please enter your Google account email.');
+      return;
+    }
+    if (!googlePassword) {
+      setGoogleError('Please enter your Google account password.');
+      return;
+    }
+
+    setGoogleLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/google-login`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: googleEmail.trim().toLowerCase(),
+          password: googlePassword,
+          device_hash: `dev_${navigator.userAgent.slice(0, 30)}`,
+          device_name: 'Property Base Secure Browser',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Google rejected the credentials for this account.');
+      }
+
+      setShowGoogleModal(false);
+      setAccessToken(data.access_token);
+      setAuthenticatedUser(data.user);
+
+      if (data.is_new_user && data.new_backup_codes && data.new_backup_codes.length > 0) {
+        setGeneratedCodes(data.new_backup_codes);
+        setModalMode('register');
+        setShowBackupCodesModal(true);
+      } else {
+        setStatusMessage({
+          type: 'success',
+          text: `Welcome back, ${data.user.first_name || data.user.email}! Signed in with Google.`,
+        });
+      }
+    } catch (err) {
+      setGoogleError(err.message);
+    } finally {
+      setGoogleLoading(false);
+    }
+  };
+
+  const renderGoogleModal = () => {
+    if (!showGoogleModal) return null;
+    return (
+      <div style={styles.modalOverlay}>
+        <div style={styles.googleModalBox}>
+          {/* Header */}
+          <div style={styles.googleModalHeader}>
+            <div style={styles.googleLogoContainer}>
+              <GoogleIcon />
+            </div>
+            <h3 style={styles.googleModalTitle}>
+              {googleModalMode === 'register' ? 'Sign up with Google' : 'Sign in with Google'}
+            </h3>
+            <p style={styles.googleModalSubtitle}>
+              Enter your Google account email and password to verify your identity directly with Google.
+            </p>
+          </div>
+
+          {/* Error notice if Google rejected the password */}
+          {googleError && (
+            <div style={styles.googleErrorAlert}>
+              <AlertCircle size={18} style={{ minWidth: 18, color: '#DC2626' }} />
+              <span style={{ fontSize: '13px', color: '#991B1B', lineHeight: '1.4' }}>{googleError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleGoogleModalSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Google Email field */}
+            <div>
+              <label style={styles.inputLabel}>Google Email Address</label>
+              <div style={styles.inputGroup}>
+                <Mail size={16} style={styles.inputIcon} />
+                <input
+                  type="email"
+                  value={googleEmail}
+                  onChange={(e) => {
+                    setGoogleEmail(e.target.value);
+                    if (googleError) setGoogleError('');
+                  }}
+                  placeholder="e.g. name@gmail.com"
+                  style={styles.textInput}
+                  required
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            {/* Google Password field */}
+            <div>
+              <label style={styles.inputLabel}>Google Account Password</label>
+              <div style={styles.inputGroup}>
+                <Lock size={16} style={styles.inputIcon} />
+                <input
+                  type={googleShowPassword ? 'text' : 'password'}
+                  value={googlePassword}
+                  onChange={(e) => {
+                    setGooglePassword(e.target.value);
+                    if (googleError) setGoogleError('');
+                  }}
+                  placeholder="Enter your Google account password"
+                  style={{ ...styles.textInput, paddingRight: '40px' }}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setGoogleShowPassword(!googleShowPassword)}
+                  style={styles.eyeBtn}
+                >
+                  {googleShowPassword ? <EyeOff size={16} color="#64748B" /> : <Eye size={16} color="#64748B" />}
+                </button>
+              </div>
+              <p style={{ margin: '6px 0 0 0', fontSize: '11px', color: '#64748B' }}>
+                Your password will be confirmed directly against Google's authentication servers.
+              </p>
+            </div>
+
+            {/* Modal Actions */}
+            <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGoogleModal(false);
+                  setGoogleError('');
+                }}
+                style={styles.googleModalCancelBtn}
+                disabled={googleLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                style={styles.googleModalSubmitBtn}
+                disabled={googleLoading}
+              >
+                {googleLoading ? (
+                  <>
+                    <RefreshCw size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                    <span>Verifying with Google...</span>
+                  </>
+                ) : (
+                  <>
+                    <GoogleIcon />
+                    <span>{googleModalMode === 'register' ? 'Verify & Sign Up' : 'Verify & Sign In'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
   };
 
   // ── BACKUP CODES UTILITIES ───────────────────────────────────────────────
@@ -522,7 +794,7 @@ export default function App() {
                 onClick={() => { setActiveTab('register'); clearMessages(); }}
                 style={activeTab === 'register' ? styles.tabActive : styles.tabInactive}
               >
-                Create Account
+                Sign Up
               </button>
             </div>
           )}
@@ -647,6 +919,22 @@ export default function App() {
                     {loading ? 'Verifying Credentials...' : 'SIGN IN'}
                   </button>
 
+                  <div style={styles.dividerRow}>
+                    <div style={styles.dividerLine} />
+                    <span style={styles.dividerText}>or continue with</span>
+                    <div style={styles.dividerLine} />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleOpenGoogleModal('login')}
+                    style={styles.googleBtn}
+                    disabled={loading}
+                  >
+                    <GoogleIcon />
+                    <span>Sign in with Google</span>
+                  </button>
+
                   <p style={styles.footerPrompt}>
                     Don't have an account?{' '}
                     <button
@@ -654,7 +942,7 @@ export default function App() {
                       onClick={() => { setActiveTab('register'); clearMessages(); }}
                       style={styles.textLink}
                     >
-                      Create Seller Account
+                      Sign Up
                     </button>
                   </p>
                 </form>
@@ -741,12 +1029,32 @@ export default function App() {
                     />
                   </div>
 
+                  <p style={{ fontSize: '11px', color: '#64748B', marginTop: '-10px', marginBottom: '14px', lineHeight: '16px' }}>
+                    * Password must be a combination of uppercase letters, lowercase letters, a number, and a special character (min. 8 characters).
+                  </p>
+
                   <button
                     type="submit"
                     disabled={loading}
                     style={loading ? styles.primaryBtnDisabled : styles.primaryBtn}
                   >
                     {loading ? 'Registering...' : 'REGISTER'}
+                  </button>
+
+                  <div style={styles.dividerRow}>
+                    <div style={styles.dividerLine} />
+                    <span style={styles.dividerText}>or continue with</span>
+                    <div style={styles.dividerLine} />
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => handleOpenGoogleModal('register')}
+                    style={styles.googleBtn}
+                    disabled={loading}
+                  >
+                    <GoogleIcon />
+                    <span>Sign up with Google</span>
                   </button>
 
                   <p style={styles.footerPrompt}>
@@ -910,16 +1218,19 @@ export default function App() {
                       <RefreshCw size={28} color="#4F46E5" />
                     </div>
                     <h2 style={styles.formHeading}>
-                      {forgotMode === 'request' ? 'Reset Your Password' : 'Enter Verification Code'}
+                      {forgotMode === 'request' && 'Reset Your Password'}
+                      {forgotMode === 'verify' && 'Verify Verification Code'}
+                      {forgotMode === 'new_password' && 'Update Your Password'}
                     </h2>
                     <p style={styles.formSubheading}>
-                      {forgotMode === 'request'
-                        ? 'Enter your registered email to receive a 6-digit verification code.'
-                        : 'Enter the 6-digit code received and choose your new password.'}
+                      {forgotMode === 'request' && 'Enter your registered email to receive a 6-digit verification code.'}
+                      {forgotMode === 'verify' && `Enter the 6-digit code received in your email to verify your identity.`}
+                      {forgotMode === 'new_password' && 'Enter a new different password meeting the security criteria below.'}
                     </p>
                   </div>
 
-                  {forgotMode === 'request' ? (
+                  {/* STEP 1: REQUEST VERIFICATION CODE */}
+                  {forgotMode === 'request' && (
                     <form onSubmit={handleRequestPasswordReset}>
                       <div style={styles.inputGroup}>
                         <span style={styles.inputIcon}><Mail size={18} color="#6366F1" /></span>
@@ -941,8 +1252,17 @@ export default function App() {
                         {loading ? 'Sending Code...' : 'SEND 6-DIGIT CODE'}
                       </button>
                     </form>
-                  ) : (
-                    <form onSubmit={handleResetPassword}>
+                  )}
+
+                  {/* STEP 2: VERIFY CODE MATCHES */}
+                  {forgotMode === 'verify' && (
+                    <form onSubmit={handleVerifyResetCode}>
+                      {forgotEmail && (
+                        <div style={styles.infoBanner}>
+                          Verification code sent to: <strong>{forgotEmail}</strong>
+                        </div>
+                      )}
+
                       <div style={styles.inputGroup}>
                         <span style={styles.inputIcon}><KeyRound size={18} color="#6366F1" /></span>
                         <input
@@ -951,8 +1271,54 @@ export default function App() {
                           maxLength={6}
                           placeholder="6-Digit Verification Code"
                           value={resetCode}
-                          onChange={(e) => setResetCode(e.target.value)}
+                          onChange={(e) => setResetCode(e.target.value.trim())}
                           style={{ ...styles.textInput, letterSpacing: '4px', fontWeight: 'bold' }}
+                        />
+                      </div>
+
+                      <p style={styles.helperText}>
+                        * Enter the 6-digit verification code received in your email and click Verify Code.
+                      </p>
+
+                      <button
+                        type="submit"
+                        disabled={loading || !resetCode.trim()}
+                        style={loading || !resetCode.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
+                      >
+                        {loading ? 'Verifying Code...' : 'VERIFY CODE'}
+                      </button>
+
+                      <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
+                        <button
+                          type="button"
+                          onClick={handleRequestPasswordReset}
+                          style={styles.textLink}
+                        >
+                          Resend Code
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setForgotMode('request'); clearMessages(); }}
+                          style={styles.textLink}
+                        >
+                          Change Email
+                        </button>
+                      </div>
+                    </form>
+                  )}
+
+                  {/* STEP 3: UPDATE WITH NEW DIFFERENT PASSWORD */}
+                  {forgotMode === 'new_password' && (
+                    <form onSubmit={handleResetPassword}>
+                      <div style={styles.inputGroup}>
+                        <span style={styles.inputIcon}><Lock size={18} color="#6366F1" /></span>
+                        <input
+                          type="password"
+                          required
+                          placeholder="New Password"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          style={styles.textInput}
                         />
                       </div>
 
@@ -961,11 +1327,33 @@ export default function App() {
                         <input
                           type="password"
                           required
-                          placeholder="New Secure Password"
-                          value={newPassword}
-                          onChange={(e) => setNewPassword(e.target.value)}
+                          placeholder="Confirm New Password"
+                          value={confirmPassword}
+                          onChange={(e) => setConfirmPassword(e.target.value)}
                           style={styles.textInput}
                         />
+                      </div>
+
+                      {/* Real-time Password Requirements Checklist */}
+                      <div style={{ backgroundColor: '#F8FAFC', border: '1px solid #E2E8F0', borderRadius: '8px', padding: '10px 14px', marginBottom: '18px', fontSize: '11px', color: '#475569' }}>
+                        <div style={{ fontWeight: '600', marginBottom: '6px', color: '#1E293B' }}>Required Password Combination:</div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '4px' }}>
+                          <span style={{ color: newPassword.length >= 8 ? '#16A34A' : '#64748B' }}>
+                            {newPassword.length >= 8 ? '✓' : '•'} 8+ characters
+                          </span>
+                          <span style={{ color: /[A-Z]/.test(newPassword) ? '#16A34A' : '#64748B' }}>
+                            {/[A-Z]/.test(newPassword) ? '✓' : '•'} Uppercase letter (A-Z)
+                          </span>
+                          <span style={{ color: /[a-z]/.test(newPassword) ? '#16A34A' : '#64748B' }}>
+                            {/[a-z]/.test(newPassword) ? '✓' : '•'} Lowercase letter (a-z)
+                          </span>
+                          <span style={{ color: /[0-9]/.test(newPassword) ? '#16A34A' : '#64748B' }}>
+                            {/[0-9]/.test(newPassword) ? '✓' : '•'} Number (0-9)
+                          </span>
+                          <span style={{ color: /[^A-Za-z0-9]/.test(newPassword) ? '#16A34A' : '#64748B', gridColumn: 'span 2' }}>
+                            {/[^A-Za-z0-9]/.test(newPassword) ? '✓' : '•'} Special character (!@#$%^&*)
+                          </span>
+                        </div>
                       </div>
 
                       <button
@@ -973,7 +1361,7 @@ export default function App() {
                         disabled={loading}
                         style={loading ? styles.primaryBtnDisabled : styles.primaryBtn}
                       >
-                        {loading ? 'Updating Password...' : 'RESET PASSWORD & TERMINATE SESSIONS'}
+                        {loading ? 'Updating Password...' : 'RESET PASSWORD'}
                       </button>
                     </form>
                   )}
@@ -982,7 +1370,7 @@ export default function App() {
                     Remembered your password?{' '}
                     <button
                       type="button"
-                      onClick={() => { setActiveTab('login'); clearMessages(); }}
+                      onClick={() => { setActiveTab('login'); clearMessages(); setForgotMode('request'); }}
                       style={styles.textLink}
                     >
                       Back to Sign In
@@ -997,6 +1385,8 @@ export default function App() {
 
       {/* ──────────────── BACKUP CODES POPUP MODAL ──────────────── */}
       {renderBackupModal()}
+      {/* ──────────────── GOOGLE CREDENTIALS VERIFICATION MODAL ──────────────── */}
+      {renderGoogleModal()}
     </div>
   );
 }
@@ -1266,6 +1656,41 @@ const styles = {
     alignItems: 'center',
     justifyContent: 'center',
   },
+  dividerRow: {
+    display: 'flex',
+    alignItems: 'center',
+    margin: '18px 0 14px 0',
+    gap: '12px',
+  },
+  dividerLine: {
+    flex: 1,
+    height: '1px',
+    backgroundColor: '#E2E8F0',
+  },
+  dividerText: {
+    fontSize: '11px',
+    color: '#94A3B8',
+    fontWeight: '600',
+    textTransform: 'uppercase',
+    letterSpacing: '0.5px',
+  },
+  googleBtn: {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '10px',
+    width: '100%',
+    padding: '11px 16px',
+    backgroundColor: '#FFFFFF',
+    color: '#1E293B',
+    border: '1px solid #CBD5E1',
+    borderRadius: '10px',
+    fontSize: '13px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    boxShadow: '0 1px 2px rgba(0,0,0,0.04)',
+    transition: 'all 0.15s ease',
+  },
   footerPrompt: {
     textAlign: 'center',
     fontSize: '13px',
@@ -1472,5 +1897,83 @@ const styles = {
     fontSize: '14px',
     fontWeight: '700',
     cursor: 'pointer',
+  },
+  googleModalBox: {
+    background: '#ffffff',
+    borderRadius: '20px',
+    width: '100%',
+    maxWidth: '460px',
+    padding: '32px',
+    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+    boxSizing: 'border-box',
+    border: '1px solid #E2E8F0',
+  },
+  googleModalHeader: {
+    textAlign: 'center',
+    marginBottom: '20px',
+  },
+  googleLogoContainer: {
+    width: '52px',
+    height: '52px',
+    borderRadius: '50%',
+    background: '#F8FAFC',
+    border: '1px solid #E2E8F0',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    margin: '0 auto 12px auto',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+  },
+  googleModalTitle: {
+    fontSize: '20px',
+    fontWeight: '800',
+    color: '#0F172A',
+    margin: '0 0 6px 0',
+  },
+  googleModalSubtitle: {
+    fontSize: '13px',
+    color: '#64748B',
+    lineHeight: '1.45',
+    margin: 0,
+  },
+  googleErrorAlert: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '12px 14px',
+    backgroundColor: '#FEF2F2',
+    border: '1px solid #FCA5A5',
+    borderRadius: '10px',
+    marginBottom: '16px',
+    textAlign: 'left',
+  },
+  googleModalCancelBtn: {
+    flex: 1,
+    padding: '12px 16px',
+    backgroundColor: '#F1F5F9',
+    color: '#475569',
+    border: '1px solid #CBD5E1',
+    borderRadius: '10px',
+    fontSize: '14px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.15s ease',
+  },
+  googleModalSubmitBtn: {
+    flex: 2,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '8px',
+    padding: '12px 16px',
+    backgroundColor: '#1E293B',
+    color: '#FFFFFF',
+    border: 'none',
+    borderRadius: '10px',
+    fontSize: '14px',
+    fontWeight: '700',
+    cursor: 'pointer',
+    boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)',
+    transition: 'all 0.15s ease',
   },
 };

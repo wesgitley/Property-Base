@@ -176,10 +176,25 @@ class ForgotPasswordRequest(BaseModel):
     email: EmailStr
 
 
-class ResetPasswordRequest(BaseModel):
+class VerifyResetCodeRequest(BaseModel):
     email: EmailStr
     verification_code: str
+
+
+class ResetPasswordRequest(BaseModel):
+    email: EmailStr
+    verification_code: Optional[str] = None
+    reset_token: Optional[str] = None
     new_password: str
+
+
+class GoogleLoginRequest(BaseModel):
+    id_token: Optional[str] = None
+    email: Optional[str] = None
+    password: Optional[str] = None
+    device_hash: Optional[str] = "browser_default_hash"
+    device_name: Optional[str] = "Google Sign-In Device"
+
 
 
 class MFAVerifyRequest(BaseModel):
