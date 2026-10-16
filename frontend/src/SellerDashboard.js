@@ -1223,15 +1223,6 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
 
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                             <button
-                              onClick={() => generateSyntheticOffers(prop, 1)}
-                              style={styles.simOfferBtn}
-                              title="Generate an incoming buyer offer for this listing"
-                            >
-                              <Sparkles size={14} />
-                              <span>Simulate Offer</span>
-                            </button>
-
-                            <button
                               onClick={() => handleViewProperty(prop)}
                               style={styles.viewBtn}
                             >
@@ -1286,20 +1277,6 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                 </div>
 
                 <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexWrap: 'wrap' }}>
-                  {listings.length > 0 && (
-                    <button
-                      onClick={() => {
-                        const target = listings[Math.floor(Math.random() * listings.length)];
-                        generateSyntheticOffers(target, 1);
-                      }}
-                      style={styles.simOfferBtn}
-                      title="Simulate an incoming purchase offer for one of your listings"
-                    >
-                      <Sparkles size={14} />
-                      <span>Simulate Offer</span>
-                    </button>
-                  )}
-
                   {/* Offer Status Filter Pills */}
                   <div style={styles.statusPillGroup}>
                     {['ALL', 'PENDING', 'ACCEPTED', 'DECLINED'].map((st) => (
@@ -1336,21 +1313,9 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                     {offers.length === 0
                       ? listings.length === 0
                         ? 'Once you publish a property listing, verified buyers on Property Base will submit formal purchase proposals and inquiries here for your review.'
-                        : 'Your property listings are active! When prospective buyers submit purchase proposals, they will arrive here in real-time. You can also generate a synthetic offer to preview the review workflow.'
+                        : 'Your property listings are active! When prospective buyers submit purchase proposals, they will arrive here in real-time.'
                       : 'No purchase offers match your selected filter tab.'}
                   </p>
-                  {listings.length > 0 && offers.length === 0 && (
-                    <button
-                      onClick={() => generateSyntheticOffers(listings[0], 1)}
-                      style={{
-                        ...styles.primaryAddBtn,
-                        backgroundColor: '#059669',
-                        marginTop: '12px',
-                      }}
-                    >
-                      <Sparkles size={16} /> Simulate Buyer Offer for "{listings[0].title}"
-                    </button>
-                  )}
                 </div>
               ) : (
                 <div style={styles.offersGrid}>
