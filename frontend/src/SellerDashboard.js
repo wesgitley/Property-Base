@@ -1,6 +1,5 @@
 import React, { useState, useEffect } from 'react';
 import {
-  Home,
   Building2,
   DollarSign,
   Plus,
@@ -105,7 +104,7 @@ const formatCurrency = (amount) =>
 export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
   // Navigation & layout state
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
-  const [activeNav, setActiveNav] = useState('home');
+  const [activeNav, setActiveNav] = useState('listings');
 
   // Identify user storage key so each account has isolated listings & offers
   const userKey = user?.email || user?.username || 'new_seller';
@@ -518,17 +517,6 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
 
         {/* Navigation Items */}
         <nav style={styles.navLinks}>
-          <button
-            onClick={() => {
-              setActiveNav('home');
-              setSelectedProperty(null);
-            }}
-            style={activeNav === 'home' ? styles.navItemActive : styles.navItem}
-          >
-            <Home size={20} />
-            {isSidebarOpen && <span>Dashboard Home</span>}
-          </button>
-
           <button
             onClick={() => {
               setActiveNav('listings');
