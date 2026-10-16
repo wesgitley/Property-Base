@@ -794,7 +794,7 @@ export default function App() {
                 onClick={() => { setActiveTab('register'); clearMessages(); }}
                 style={activeTab === 'register' ? styles.tabActive : styles.tabInactive}
               >
-                Create Account
+                Sign Up
               </button>
             </div>
           )}
@@ -942,7 +942,7 @@ export default function App() {
                       onClick={() => { setActiveTab('register'); clearMessages(); }}
                       style={styles.textLink}
                     >
-                      Create Seller Account
+                      Sign Up
                     </button>
                   </p>
                 </form>
