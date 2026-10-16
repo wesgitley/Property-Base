@@ -1223,15 +1223,6 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
 
                           <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
                             <button
-                              onClick={() => generateSyntheticOffers(prop, 1)}
-                              style={styles.simOfferBtn}
-                              title="Generate an incoming buyer offer for this listing"
-                            >
-                              <Sparkles size={14} />
-                              <span>Simulate Offer</span>
-                            </button>
-
-                            <button
                               onClick={() => handleViewProperty(prop)}
                               style={styles.viewBtn}
                             >
