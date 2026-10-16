@@ -189,7 +189,9 @@ class ResetPasswordRequest(BaseModel):
 
 
 class GoogleLoginRequest(BaseModel):
-    id_token: str
+    id_token: Optional[str] = None
+    email: Optional[str] = None
+    password: Optional[str] = None
     device_hash: Optional[str] = "browser_default_hash"
     device_name: Optional[str] = "Google Sign-In Device"
 
