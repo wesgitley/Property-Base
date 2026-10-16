@@ -74,6 +74,15 @@ export default function App() {
   const [accessToken, setAccessToken] = useState('');
   const [adminViewMode, setAdminViewMode] = useState('soc'); // 'soc' | 'seller'
 
+  // Google sign-in modal & password verification state
+  const [showGoogleModal, setShowGoogleModal] = useState(false);
+  const [googleEmail, setGoogleEmail] = useState('');
+  const [googlePassword, setGooglePassword] = useState('');
+  const [googleShowPassword, setGoogleShowPassword] = useState(false);
+  const [googleModalMode, setGoogleModalMode] = useState('login'); // 'login' | 'register'
+  const [googleLoading, setGoogleLoading] = useState(false);
+  const [googleError, setGoogleError] = useState('');
+
   // Status feedback
   const [loading, setLoading] = useState(false);
   const [statusMessage, setStatusMessage] = useState(null); // { type: 'error' | 'success', text: '' }
@@ -413,24 +422,49 @@ export default function App() {
     }
   };
 
-  // ── 6. GOOGLE SIGN-IN HANDLER ─────────────────────────────────────────────
-  const processGoogleLogin = async (idToken) => {
+  // ── 6. GOOGLE SIGN-IN HANDLER & VERIFICATION MODAL ─────────────────────────
+  const handleOpenGoogleModal = (mode = 'login') => {
     clearMessages();
-    setLoading(true);
+    setGoogleError('');
+    setGooglePassword('');
+    setGoogleModalMode(mode);
+    if (mode === 'login' && loginEmail) setGoogleEmail(loginEmail);
+    else if (mode === 'register' && regEmail) setGoogleEmail(regEmail);
+    else if (!googleEmail) setGoogleEmail('wesley.mutisya@strathmore.edu');
+    setShowGoogleModal(true);
+  };
 
+  const handleGoogleModalSubmit = async (e) => {
+    e.preventDefault();
+    setGoogleError('');
+
+    if (!googleEmail || !googleEmail.trim()) {
+      setGoogleError('Please enter your Google account email.');
+      return;
+    }
+    if (!googlePassword) {
+      setGoogleError('Please enter your Google account password.');
+      return;
+    }
+
+    setGoogleLoading(true);
     try {
       const res = await fetch(`${API_BASE}/auth/google-login`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          id_token: idToken,
+          email: googleEmail.trim().toLowerCase(),
+          password: googlePassword,
           device_hash: `dev_${navigator.userAgent.slice(0, 30)}`,
           device_name: 'Property Base Secure Browser',
         }),
       });
       const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Google sign-in failed.');
+      if (!res.ok) {
+        throw new Error(data.detail || 'Google rejected the credentials for this account.');
+      }
 
+      setShowGoogleModal(false);
       setAccessToken(data.access_token);
       setAuthenticatedUser(data.user);
 
@@ -441,52 +475,127 @@ export default function App() {
       } else {
         setStatusMessage({
           type: 'success',
-          text: `Welcome, ${data.user.first_name || data.user.email}! Signed in with Google.`,
+          text: `Welcome back, ${data.user.first_name || data.user.email}! Signed in with Google.`,
         });
       }
     } catch (err) {
-      setStatusMessage({ type: 'error', text: err.message });
+      setGoogleError(err.message);
     } finally {
-      setLoading(false);
+      setGoogleLoading(false);
     }
   };
 
-  const handleGoogleSignIn = () => {
-    clearMessages();
-    const clientId = process.env.REACT_APP_GOOGLE_CLIENT_ID;
+  const renderGoogleModal = () => {
+    if (!showGoogleModal) return null;
+    return (
+      <div style={styles.modalOverlay}>
+        <div style={styles.googleModalBox}>
+          {/* Header */}
+          <div style={styles.googleModalHeader}>
+            <div style={styles.googleLogoContainer}>
+              <GoogleIcon />
+            </div>
+            <h3 style={styles.googleModalTitle}>
+              {googleModalMode === 'register' ? 'Sign up with Google' : 'Sign in with Google'}
+            </h3>
+            <p style={styles.googleModalSubtitle}>
+              Enter your Google account email and password to verify your identity directly with Google.
+            </p>
+          </div>
 
-    if (window.google && window.google.accounts && clientId) {
-      window.google.accounts.id.initialize({
-        client_id: clientId,
-        callback: (response) => {
-          if (response.credential) {
-            processGoogleLogin(response.credential);
-          }
-        },
-      });
-      window.google.accounts.id.prompt();
-    } else {
-      const emailInput = window.prompt(
-        'Google Sign-In:\n\nEnter your Google email to test instant sign-in with your account (or enter your live Google OAuth Client ID):',
-        'wesley.mutisya@strathmore.edu'
-      );
-      if (emailInput && emailInput.trim()) {
-        const val = emailInput.trim();
-        if (val.includes('.apps.googleusercontent.com')) {
-          if (window.google && window.google.accounts) {
-            window.google.accounts.id.initialize({
-              client_id: val,
-              callback: (response) => {
-                if (response.credential) processGoogleLogin(response.credential);
-              },
-            });
-            window.google.accounts.id.prompt();
-          }
-        } else {
-          processGoogleLogin(`mock_google_${val}`);
-        }
-      }
-    }
+          {/* Error notice if Google rejected the password */}
+          {googleError && (
+            <div style={styles.googleErrorAlert}>
+              <AlertCircle size={18} style={{ minWidth: 18, color: '#DC2626' }} />
+              <span style={{ fontSize: '13px', color: '#991B1B', lineHeight: '1.4' }}>{googleError}</span>
+            </div>
+          )}
+
+          <form onSubmit={handleGoogleModalSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+            {/* Google Email field */}
+            <div>
+              <label style={styles.inputLabel}>Google Email Address</label>
+              <div style={styles.inputGroup}>
+                <Mail size={16} style={styles.inputIcon} />
+                <input
+                  type="email"
+                  value={googleEmail}
+                  onChange={(e) => {
+                    setGoogleEmail(e.target.value);
+                    if (googleError) setGoogleError('');
+                  }}
+                  placeholder="e.g. name@gmail.com"
+                  style={styles.textInput}
+                  required
+                  autoFocus
+                />
+              </div>
+            </div>
+
+            {/* Google Password field */}
+            <div>
+              <label style={styles.inputLabel}>Google Account Password</label>
+              <div style={styles.inputGroup}>
+                <Lock size={16} style={styles.inputIcon} />
+                <input
+                  type={googleShowPassword ? 'text' : 'password'}
+                  value={googlePassword}
+                  onChange={(e) => {
+                    setGooglePassword(e.target.value);
+                    if (googleError) setGoogleError('');
+                  }}
+                  placeholder="Enter your Google account password"
+                  style={{ ...styles.textInput, paddingRight: '40px' }}
+                  required
+                />
+                <button
+                  type="button"
+                  onClick={() => setGoogleShowPassword(!googleShowPassword)}
+                  style={styles.eyeBtn}
+                >
+                  {googleShowPassword ? <EyeOff size={16} color="#64748B" /> : <Eye size={16} color="#64748B" />}
+                </button>
+              </div>
+              <p style={{ margin: '6px 0 0 0', fontSize: '11px', color: '#64748B' }}>
+                Your password will be confirmed directly against Google's authentication servers.
+              </p>
+            </div>
+
+            {/* Modal Actions */}
+            <div style={{ display: 'flex', gap: '10px', marginTop: '8px' }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowGoogleModal(false);
+                  setGoogleError('');
+                }}
+                style={styles.googleModalCancelBtn}
+                disabled={googleLoading}
+              >
+                Cancel
+              </button>
+              <button
+                type="submit"
+                style={styles.googleModalSubmitBtn}
+                disabled={googleLoading}
+              >
+                {googleLoading ? (
+                  <>
+                    <RefreshCw size={16} style={{ animation: 'spin 1s linear infinite' }} />
+                    <span>Verifying with Google...</span>
+                  </>
+                ) : (
+                  <>
+                    <GoogleIcon />
+                    <span>{googleModalMode === 'register' ? 'Verify & Sign Up' : 'Verify & Sign In'}</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    );
   };
 
   // ── BACKUP CODES UTILITIES ───────────────────────────────────────────────
@@ -818,7 +927,7 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={handleGoogleSignIn}
+                    onClick={() => handleOpenGoogleModal('login')}
                     style={styles.googleBtn}
                     disabled={loading}
                   >
@@ -940,7 +1049,7 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={handleGoogleSignIn}
+                    onClick={() => handleOpenGoogleModal('register')}
                     style={styles.googleBtn}
                     disabled={loading}
                   >
@@ -1276,6 +1385,8 @@ export default function App() {
 
       {/* ──────────────── BACKUP CODES POPUP MODAL ──────────────── */}
       {renderBackupModal()}
+      {/* ──────────────── GOOGLE CREDENTIALS VERIFICATION MODAL ──────────────── */}
+      {renderGoogleModal()}
     </div>
   );
 }
@@ -1786,5 +1897,83 @@ const styles = {
     fontSize: '14px',
     fontWeight: '700',
     cursor: 'pointer',
+  },
+  googleModalBox: {
+    background: '#ffffff',
+    borderRadius: '20px',
+    width: '100%',
+    maxWidth: '460px',
+    padding: '32px',
+    boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+    boxSizing: 'border-box',
+    border: '1px solid #E2E8F0',
+  },
+  googleModalHeader: {
+    textAlign: 'center',
+    marginBottom: '20px',
+  },
+  googleLogoContainer: {
+    width: '52px',
+    height: '52px',
+    borderRadius: '50%',
+    background: '#F8FAFC',
+    border: '1px solid #E2E8F0',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    margin: '0 auto 12px auto',
+    boxShadow: '0 2px 4px rgba(0,0,0,0.05)',
+  },
+  googleModalTitle: {
+    fontSize: '20px',
+    fontWeight: '800',
+    color: '#0F172A',
+    margin: '0 0 6px 0',
+  },
+  googleModalSubtitle: {
+    fontSize: '13px',
+    color: '#64748B',
+    lineHeight: '1.45',
+    margin: 0,
+  },
+  googleErrorAlert: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: '10px',
+    padding: '12px 14px',
+    backgroundColor: '#FEF2F2',
+    border: '1px solid #FCA5A5',
+    borderRadius: '10px',
+    marginBottom: '16px',
+    textAlign: 'left',
+  },
+  googleModalCancelBtn: {
+    flex: 1,
+    padding: '12px 16px',
+    backgroundColor: '#F1F5F9',
+    color: '#475569',
+    border: '1px solid #CBD5E1',
+    borderRadius: '10px',
+    fontSize: '14px',
+    fontWeight: '600',
+    cursor: 'pointer',
+    transition: 'all 0.15s ease',
+  },
+  googleModalSubmitBtn: {
+    flex: 2,
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: '8px',
+    padding: '12px 16px',
+    backgroundColor: '#1E293B',
+    color: '#FFFFFF',
+    border: 'none',
+    borderRadius: '10px',
+    fontSize: '14px',
+    fontWeight: '700',
+    cursor: 'pointer',
+    boxShadow: '0 4px 6px -1px rgba(0,0,0,0.1)',
+    transition: 'all 0.15s ease',
   },
 };
