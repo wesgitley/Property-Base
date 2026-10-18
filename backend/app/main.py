@@ -12,6 +12,7 @@ from app.core.database import Base, SessionLocal, engine
 from app.core.security import get_password_hash
 from app.models import (
     PropertyListing,
+    PropertySeller,
     PropertyStatus,
     User,
     UserBehaviorBaseline,
@@ -103,11 +104,28 @@ def seed_initial_demo_data(db: Session):
             is_trusted=True,
         )
         db.add(device)
+        db.commit()
+
+        # Ensure PropertySeller profile exists
+        seller_profile = db.query(PropertySeller).filter(PropertySeller.user_id == seller_user.user_id).first()
+        if not seller_profile:
+            seller_profile = PropertySeller(
+                user_id=seller_user.user_id,
+                full_name="Demo Real Estate Seller",
+                phone_number="+254711223344",
+                agency_name="Prime Nairobi Properties",
+                city="Nairobi",
+                bio="Verified premier property consultant.",
+                is_verified=True,
+            )
+            db.add(seller_profile)
+            db.commit()
+            db.refresh(seller_profile)
 
         # Sample Property Listings
         properties = [
             PropertyListing(
-                seller_id=seller_user.user_id,
+                seller_id=seller_profile.seller_id,
                 title="Luxury 3-Bedroom Penthouse in Westlands",
                 description="Modern skyline views, premium finishes, private rooftop terrace, high-speed elevators, and 24/7 biometric security access.",
                 price=385000.0,
@@ -120,7 +138,7 @@ def seed_initial_demo_data(db: Session):
                 image_url="https://images.unsplash.com/photo-1600596542815-ffad4c1539a9?auto=format&fit=crop&w=800&q=80",
             ),
             PropertyListing(
-                seller_id=seller_user.user_id,
+                seller_id=seller_profile.seller_id,
                 title="Contemporary 4-Bedroom Villa with Swimming Pool",
                 description="Spacious landscaped garden, solar powered, smart home automation, gourmet kitchen, and secure gated community.",
                 price=550000.0,
@@ -133,7 +151,7 @@ def seed_initial_demo_data(db: Session):
                 image_url="https://images.unsplash.com/photo-1600585154340-be6161a56a0c?auto=format&fit=crop&w=800&q=80",
             ),
             PropertyListing(
-                seller_id=seller_user.user_id,
+                seller_id=seller_profile.seller_id,
                 title="Executive Commercial Office Suite",
                 description="Fully fitted Grade A office space, boardroom, conference facilities, and fiber optic backbone.",
                 price=210000.0,
