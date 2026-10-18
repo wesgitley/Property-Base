@@ -51,8 +51,11 @@ export default function App() {
   const [preAuthToken, setPreAuthToken] = useState('');
   const [mfaEmail, setMfaEmail] = useState('');
   const [backupCodeInput, setBackupCodeInput] = useState('');
-  const [mfaMethod, setMfaMethod] = useState('backup'); // 'backup' | 'email_otp'
+  const [mfaMethod, setMfaMethod] = useState('backup'); // 'backup' | 'email_otp' | 'sms_otp'
   const [emailOtpInput, setEmailOtpInput] = useState('');
+  const [smsOtpInput, setSmsOtpInput] = useState('');
+  const [mfaPhoneInput, setMfaPhoneInput] = useState('');
+  const [mfaPhoneMasked, setMfaPhoneMasked] = useState('');
   const [backupCodesDepleted, setBackupCodesDepleted] = useState(false);
 
   // Backup Codes Modal (Registration or Auto-Refill on depletion)
@@ -63,6 +66,9 @@ export default function App() {
 
   // Forgot password & reset state
   const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotPhone, setForgotPhone] = useState('');
+  const [forgotChannel, setForgotChannel] = useState('EMAIL'); // 'EMAIL' | 'SMS'
+  const [forgotTargetLabel, setForgotTargetLabel] = useState('');
   const [resetCode, setResetCode] = useState('');
   const [newPassword, setNewPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -166,6 +172,8 @@ export default function App() {
       // Step 1 Success: MFA Required
       setPreAuthToken(data.mfa_pre_auth_token);
       setMfaEmail(data.email);
+      setMfaPhoneMasked(data.masked_phone || '');
+      setMfaPhoneInput(data.mobile_number || '');
       setBackupCodesDepleted(!!data.backup_codes_depleted);
       if (data.backup_codes_depleted) {
         setMfaMethod('email_otp');
@@ -291,7 +299,7 @@ export default function App() {
       setStatusMessage({
         type: 'success',
         text: data.dev_code
-          ? `One-time code: ${data.dev_code} (Enter this code to access your account)`
+          ? `One-time email code: ${data.dev_code} (Enter this code to access your account)`
           : 'A one-time verification code has been dispatched to your email.',
       });
     } catch (err) {
@@ -301,28 +309,103 @@ export default function App() {
     }
   };
 
+  const handleRequestSmsOtp = async (customPhone = null) => {
+    clearMessages();
+    setLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/auth/mfa/send-sms-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mfa_pre_auth_token: preAuthToken,
+          phone_number: customPhone || mfaPhoneInput || null,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to dispatch SMS code.');
+      setMfaMethod('sms_otp');
+      setMfaPhoneMasked(data.masked_phone || '');
+      setStatusMessage({
+        type: 'success',
+        text: data.dev_code
+          ? `SMS Code: ${data.dev_code} (Dispatched to ${data.masked_phone || 'your phone'})`
+          : `A 6-digit verification code has been sent via SMS to ${data.masked_phone || 'your phone'}.`,
+      });
+    } catch (err) {
+      setStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
 
-  // ── 4. FORGOT PASSWORD (STEP 1: REQUEST CODE) ────────────────────────────
+  const handleVerifySmsOtp = async (e) => {
+    e.preventDefault();
+    clearMessages();
+    setLoading(true);
+
+    try {
+      const res = await fetch(`${API_BASE}/auth/mfa/verify-sms-otp`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mfa_pre_auth_token: preAuthToken,
+          otp_code: smsOtpInput.trim(),
+          device_hash: `dev_${navigator.userAgent.slice(0, 30)}`,
+          device_name: 'Property Base Secure Browser',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Failed to verify SMS code.');
+
+      setAccessToken(data.access_token);
+      setAuthenticatedUser(data.user);
+
+      if (data.new_backup_codes && data.new_backup_codes.length > 0) {
+        setGeneratedCodes(data.new_backup_codes);
+        setModalMode('refill');
+        setShowBackupCodesModal(true);
+      } else {
+        setStatusMessage({
+          type: 'success',
+          text: `Welcome back, ${data.user.first_name || data.user.email}! Verified via SMS OTP.`,
+        });
+      }
+    } catch (err) {
+      setStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setLoading(false);
+    }
+  };
+
+
+  // ── 4. FORGOT PASSWORD (STEP 1: REQUEST CODE VIA EMAIL OR SMS) ────────────
   const handleRequestPasswordReset = async (e) => {
     e.preventDefault();
     clearMessages();
     setLoading(true);
 
     try {
+      const payload = {
+        channel: forgotChannel,
+        email: forgotEmail.trim() || null,
+        phone_number: forgotPhone.trim() || null,
+      };
+
       const res = await fetch(`${API_BASE}/auth/forgot-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: forgotEmail.trim() }),
+        body: JSON.stringify(payload),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Error requesting reset.');
 
+      setForgotTargetLabel(data.masked_phone || data.email || forgotEmail || forgotPhone);
       setForgotMode('verify');
       setStatusMessage({
         type: 'success',
         text: data.dev_code
-          ? `Verification Code: ${data.dev_code} (Enter this code below to verify)`
-          : 'A 6-digit verification code has been dispatched to your email. Enter it below to verify.',
+          ? `Verification Code: ${data.dev_code} (Dispatched via ${forgotChannel})`
+          : (data.message || `A 6-digit verification code has been dispatched via ${forgotChannel}.`),
       });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
@@ -347,7 +430,8 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: forgotEmail.trim(),
+          email: forgotEmail.trim() || null,
+          phone_number: forgotPhone.trim() || null,
           verification_code: resetCode.trim(),
         }),
       });
@@ -394,7 +478,8 @@ export default function App() {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          email: forgotEmail.trim(),
+          email: forgotEmail.trim() || null,
+          phone_number: forgotPhone.trim() || null,
           verification_code: resetCode.trim(),
           reset_token: resetToken,
           new_password: newPassword,
@@ -1079,7 +1164,9 @@ export default function App() {
                     </div>
                     <h2 style={styles.formHeading}>Two-Factor Authentication</h2>
                     <p style={styles.formSubheading}>
-                      {mfaMethod === 'email_otp'
+                      {mfaMethod === 'sms_otp'
+                        ? 'Enter the 6-digit one-time code sent to your mobile phone via SMS'
+                        : mfaMethod === 'email_otp'
                         ? 'Enter the 6-digit one-time code sent to your registered email'
                         : 'Enter one of your single-use backup recovery codes to access Property Base'}
                     </p>
@@ -1091,6 +1178,77 @@ export default function App() {
                     </div>
                   )}
 
+                  {/* MFA Method Toggle Bar */}
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '18px', background: '#F1F5F9', padding: '4px', borderRadius: '8px' }}>
+                    <button
+                      type="button"
+                      onClick={() => { setMfaMethod('backup'); clearMessages(); }}
+                      disabled={backupCodesDepleted}
+                      style={{
+                        flex: 1,
+                        padding: '8px 4px',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        borderRadius: '6px',
+                        border: 'none',
+                        cursor: backupCodesDepleted ? 'not-allowed' : 'pointer',
+                        background: mfaMethod === 'backup' ? '#FFFFFF' : 'transparent',
+                        color: mfaMethod === 'backup' ? '#4F46E5' : (backupCodesDepleted ? '#94A3B8' : '#64748B'),
+                        boxShadow: mfaMethod === 'backup' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      <KeyRound size={14} /> Backup Code
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setMfaMethod('email_otp'); clearMessages(); }}
+                      style={{
+                        flex: 1,
+                        padding: '8px 4px',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        borderRadius: '6px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        background: mfaMethod === 'email_otp' ? '#FFFFFF' : 'transparent',
+                        color: mfaMethod === 'email_otp' ? '#4F46E5' : '#64748B',
+                        boxShadow: mfaMethod === 'email_otp' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      <Mail size={14} /> Email OTP
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setMfaMethod('sms_otp'); clearMessages(); }}
+                      style={{
+                        flex: 1,
+                        padding: '8px 4px',
+                        fontSize: '12px',
+                        fontWeight: '600',
+                        borderRadius: '6px',
+                        border: 'none',
+                        cursor: 'pointer',
+                        background: mfaMethod === 'sms_otp' ? '#FFFFFF' : 'transparent',
+                        color: mfaMethod === 'sms_otp' ? '#4F46E5' : '#64748B',
+                        boxShadow: mfaMethod === 'sms_otp' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                        gap: '4px'
+                      }}
+                    >
+                      <Phone size={14} /> SMS to Phone
+                    </button>
+                  </div>
+
                   {backupCodesDepleted && (
                     <div style={{ ...styles.errorBanner, background: '#FEF3C7', color: '#92400E', border: '1px solid #F59E0B' }}>
                       <AlertCircle size={20} style={{ minWidth: 20 }} />
@@ -1101,7 +1259,7 @@ export default function App() {
                     </div>
                   )}
 
-                  {mfaMethod === 'backup' && !backupCodesDepleted ? (
+                  {mfaMethod === 'backup' && !backupCodesDepleted && (
                     <form onSubmit={handleVerifyBackupCode}>
                       <div style={styles.inputGroup}>
                         <span style={styles.inputIcon}><KeyRound size={18} color="#6366F1" /></span>
@@ -1123,17 +1281,26 @@ export default function App() {
                         {loading ? 'Verifying Code...' : 'VERIFY & ACCESS ACCOUNT'}
                       </button>
 
-                      <div style={{ marginTop: '16px', textAlign: 'center' }}>
+                      <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
                         <button
                           type="button"
-                          onClick={handleRequestEmailOtp}
+                          onClick={() => { setMfaMethod('email_otp'); clearMessages(); }}
                           style={styles.textLink}
                         >
-                          Send One-Time Code to Email Instead
+                          Use Email Code
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setMfaMethod('sms_otp'); clearMessages(); }}
+                          style={styles.textLink}
+                        >
+                          Use SMS Code
                         </button>
                       </div>
                     </form>
-                  ) : (
+                  )}
+
+                  {mfaMethod === 'email_otp' && (
                     <form onSubmit={handleVerifyEmailOtp}>
                       <div style={styles.inputGroup}>
                         <span style={styles.inputIcon}><Mail size={18} color="#6366F1" /></span>
@@ -1157,7 +1324,7 @@ export default function App() {
                         disabled={loading || !emailOtpInput.trim()}
                         style={loading || !emailOtpInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
                       >
-                        {loading ? 'Verifying Email Code...' : 'VERIFY & RECEIVE REFILLED CODES'}
+                        {loading ? 'Verifying Email Code...' : 'VERIFY & ACCESS ACCOUNT'}
                       </button>
 
                       <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
@@ -1171,7 +1338,90 @@ export default function App() {
                         {!backupCodesDepleted && (
                           <button
                             type="button"
-                            onClick={() => setMfaMethod('backup')}
+                            onClick={() => { setMfaMethod('backup'); clearMessages(); }}
+                            style={styles.textLink}
+                          >
+                            Use Backup Code
+                          </button>
+                        )}
+                      </div>
+                    </form>
+                  )}
+
+                  {mfaMethod === 'sms_otp' && (
+                    <form onSubmit={handleVerifySmsOtp}>
+                      {mfaPhoneMasked ? (
+                        <div style={{ ...styles.infoBanner, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px' }}>
+                          <span>Phone: <strong>{mfaPhoneMasked}</strong></span>
+                          <button
+                            type="button"
+                            onClick={() => handleRequestSmsOtp()}
+                            disabled={loading}
+                            style={{ ...styles.textLink, fontSize: '12px' }}
+                          >
+                            {loading ? 'Sending...' : 'Send / Resend SMS'}
+                          </button>
+                        </div>
+                      ) : (
+                        <div style={{ marginBottom: '14px' }}>
+                          <div style={styles.inputGroup}>
+                            <span style={styles.inputIcon}><Phone size={18} color="#6366F1" /></span>
+                            <input
+                              type="tel"
+                              placeholder="Mobile Number (e.g. +254 7...)"
+                              value={mfaPhoneInput}
+                              onChange={(e) => setMfaPhoneInput(e.target.value)}
+                              style={styles.textInput}
+                            />
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => handleRequestSmsOtp(mfaPhoneInput)}
+                            disabled={loading || !mfaPhoneInput.trim()}
+                            style={{ ...(loading || !mfaPhoneInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn), padding: '8px 12px', fontSize: '13px', marginBottom: '8px' }}
+                          >
+                            {loading ? 'Sending SMS Code...' : 'SEND 6-DIGIT CODE VIA SMS'}
+                          </button>
+                        </div>
+                      )}
+
+                      <div style={styles.inputGroup}>
+                        <span style={styles.inputIcon}><KeyRound size={18} color="#6366F1" /></span>
+                        <input
+                          type="text"
+                          required
+                          maxLength={6}
+                          placeholder="6-Digit SMS Code"
+                          value={smsOtpInput}
+                          onChange={(e) => setSmsOtpInput(e.target.value.trim())}
+                          style={{ ...styles.textInput, letterSpacing: '4px', fontWeight: 'bold' }}
+                        />
+                      </div>
+
+                      <p style={styles.helperText}>
+                        * Check your SMS inbox for the 6-digit code. Valid for 10 minutes.
+                      </p>
+
+                      <button
+                        type="submit"
+                        disabled={loading || !smsOtpInput.trim()}
+                        style={loading || !smsOtpInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
+                      >
+                        {loading ? 'Verifying SMS Code...' : 'VERIFY & ACCESS ACCOUNT'}
+                      </button>
+
+                      <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
+                        <button
+                          type="button"
+                          onClick={() => handleRequestSmsOtp()}
+                          style={styles.textLink}
+                        >
+                          Resend SMS Code
+                        </button>
+                        {!backupCodesDepleted && (
+                          <button
+                            type="button"
+                            onClick={() => { setMfaMethod('backup'); clearMessages(); }}
                             style={styles.textLink}
                           >
                             Use Backup Code
@@ -1223,8 +1473,8 @@ export default function App() {
                       {forgotMode === 'new_password' && 'Update Your Password'}
                     </h2>
                     <p style={styles.formSubheading}>
-                      {forgotMode === 'request' && 'Enter your registered email to receive a 6-digit verification code.'}
-                      {forgotMode === 'verify' && `Enter the 6-digit code received in your email to verify your identity.`}
+                      {forgotMode === 'request' && (forgotChannel === 'SMS' ? 'Enter your registered phone or email to receive a 6-digit verification code via SMS.' : 'Enter your registered email to receive a 6-digit verification code.')}
+                      {forgotMode === 'verify' && `Enter the 6-digit code received via ${forgotChannel === 'SMS' ? 'SMS on your phone' : 'email'} to verify your identity.`}
                       {forgotMode === 'new_password' && 'Enter a new different password meeting the security criteria below.'}
                     </p>
                   </div>
@@ -1232,24 +1482,100 @@ export default function App() {
                   {/* STEP 1: REQUEST VERIFICATION CODE */}
                   {forgotMode === 'request' && (
                     <form onSubmit={handleRequestPasswordReset}>
-                      <div style={styles.inputGroup}>
-                        <span style={styles.inputIcon}><Mail size={18} color="#6366F1" /></span>
-                        <input
-                          type="email"
-                          required
-                          placeholder="Your Registered Email"
-                          value={forgotEmail}
-                          onChange={(e) => setForgotEmail(e.target.value)}
-                          style={styles.textInput}
-                        />
+                      {/* Channel Selector */}
+                      <div style={{ display: 'flex', gap: '8px', marginBottom: '18px', background: '#F1F5F9', padding: '4px', borderRadius: '8px' }}>
+                        <button
+                          type="button"
+                          onClick={() => { setForgotChannel('EMAIL'); clearMessages(); }}
+                          style={{
+                            flex: 1,
+                            padding: '8px 4px',
+                            fontSize: '12px',
+                            fontWeight: '600',
+                            borderRadius: '6px',
+                            border: 'none',
+                            cursor: 'pointer',
+                            background: forgotChannel === 'EMAIL' ? '#FFFFFF' : 'transparent',
+                            color: forgotChannel === 'EMAIL' ? '#4F46E5' : '#64748B',
+                            boxShadow: forgotChannel === 'EMAIL' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px'
+                          }}
+                        >
+                          <Mail size={14} /> Send to Email
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => { setForgotChannel('SMS'); clearMessages(); }}
+                          style={{
+                            flex: 1,
+                            padding: '8px 4px',
+                            fontSize: '12px',
+                            fontWeight: '600',
+                            borderRadius: '6px',
+                            border: 'none',
+                            cursor: 'pointer',
+                            background: forgotChannel === 'SMS' ? '#FFFFFF' : 'transparent',
+                            color: forgotChannel === 'SMS' ? '#4F46E5' : '#64748B',
+                            boxShadow: forgotChannel === 'SMS' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
+                            display: 'flex',
+                            alignItems: 'center',
+                            justifyContent: 'center',
+                            gap: '6px'
+                          }}
+                        >
+                          <Phone size={14} /> Send via SMS
+                        </button>
                       </div>
+
+                      {forgotChannel === 'EMAIL' ? (
+                        <div style={styles.inputGroup}>
+                          <span style={styles.inputIcon}><Mail size={18} color="#6366F1" /></span>
+                          <input
+                            type="email"
+                            required
+                            placeholder="Your Registered Email"
+                            value={forgotEmail}
+                            onChange={(e) => setForgotEmail(e.target.value)}
+                            style={styles.textInput}
+                          />
+                        </div>
+                      ) : (
+                        <>
+                          <div style={styles.inputGroup}>
+                            <span style={styles.inputIcon}><Phone size={18} color="#6366F1" /></span>
+                            <input
+                              type="tel"
+                              placeholder="Registered Mobile Phone (e.g. +254 7...)"
+                              value={forgotPhone}
+                              onChange={(e) => setForgotPhone(e.target.value)}
+                              style={styles.textInput}
+                            />
+                          </div>
+                          <div style={{ ...styles.inputGroup, marginBottom: '10px' }}>
+                            <span style={styles.inputIcon}><Mail size={18} color="#6366F1" /></span>
+                            <input
+                              type="email"
+                              placeholder="Or Your Registered Email"
+                              value={forgotEmail}
+                              onChange={(e) => setForgotEmail(e.target.value)}
+                              style={styles.textInput}
+                            />
+                          </div>
+                          <p style={{ ...styles.helperText, marginBottom: '14px', fontSize: '11px' }}>
+                            * Enter your mobile number or account email. The 6-digit code will be delivered to your registered phone.
+                          </p>
+                        </>
+                      )}
 
                       <button
                         type="submit"
-                        disabled={loading}
-                        style={loading ? styles.primaryBtnDisabled : styles.primaryBtn}
+                        disabled={loading || (forgotChannel === 'EMAIL' ? !forgotEmail.trim() : (!forgotPhone.trim() && !forgotEmail.trim()))}
+                        style={loading || (forgotChannel === 'EMAIL' ? !forgotEmail.trim() : (!forgotPhone.trim() && !forgotEmail.trim())) ? styles.primaryBtnDisabled : styles.primaryBtn}
                       >
-                        {loading ? 'Sending Code...' : 'SEND 6-DIGIT CODE'}
+                        {loading ? 'Sending Code...' : (forgotChannel === 'SMS' ? 'SEND 6-DIGIT CODE VIA SMS' : 'SEND 6-DIGIT CODE TO EMAIL')}
                       </button>
                     </form>
                   )}
@@ -1257,9 +1583,9 @@ export default function App() {
                   {/* STEP 2: VERIFY CODE MATCHES */}
                   {forgotMode === 'verify' && (
                     <form onSubmit={handleVerifyResetCode}>
-                      {forgotEmail && (
+                      {forgotTargetLabel && (
                         <div style={styles.infoBanner}>
-                          Verification code sent to: <strong>{forgotEmail}</strong>
+                          Verification code sent via <strong>{forgotChannel === 'SMS' ? 'SMS' : 'Email'}</strong> to: <strong>{forgotTargetLabel}</strong>
                         </div>
                       )}
 
@@ -1277,7 +1603,7 @@ export default function App() {
                       </div>
 
                       <p style={styles.helperText}>
-                        * Enter the 6-digit verification code received in your email and click Verify Code.
+                        * Enter the 6-digit verification code received {forgotChannel === 'SMS' ? 'via SMS on your phone' : 'in your email'} and click Verify Code.
                       </p>
 
                       <button
@@ -1301,7 +1627,7 @@ export default function App() {
                           onClick={() => { setForgotMode('request'); clearMessages(); }}
                           style={styles.textLink}
                         >
-                          Change Email
+                          Change {forgotChannel === 'SMS' ? 'Phone / Email' : 'Email'}
                         </button>
                       </div>
                     </form>

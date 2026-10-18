@@ -50,11 +50,13 @@ from app.schemas import (
     ResetPasswordRequest,
     RiskAssessmentResponse,
     SendEmailOTPRequest,
+    SendSMSOTPRequest,
     TokenResponse,
     UserLogin,
     UserRegister,
     UserResponse,
     VerifyEmailOTPRequest,
+    VerifySMSOTPRequest,
     VerifyRecoveryLink,
     VerifyResetCodeRequest,
     GoogleLoginRequest,
@@ -65,6 +67,11 @@ from app.services.email_service import (
     generate_backup_codes,
     generate_otp_code,
     hash_secret_code,
+)
+from app.services.sms_service import (
+    SMSService,
+    mask_phone_number,
+    normalize_phone_number,
 )
 from app.services.risk_engine import RiskEngine
 
@@ -343,6 +350,8 @@ def login(request: Request, login_in: Dict[str, Any], db: Session = Depends(get_
         "last_name": user.last_name,
         "backup_codes_depleted": backup_codes_depleted,
         "unused_codes_count": unused_codes_count,
+        "mobile_number": user.mobile_number,
+        "masked_phone": mask_phone_number(user.mobile_number) if user.mobile_number else None,
     }
 
 
@@ -1031,20 +1040,275 @@ def verify_mfa_email_otp(
 
 
 
+@router.post("/mfa/send-sms-otp")
+def send_mfa_sms_otp(
+    req: SendSMSOTPRequest,
+    db: Session = Depends(get_db),
+) -> Any:
+    """
+    Sends a 6-digit one-time verification code via SMS to the user's phone for MFA verification.
+    """
+    try:
+        payload = decode_token(req.mfa_pre_auth_token)
+        if payload.get("type") != "mfa_pre_auth":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid pre-auth token.")
+        user_id = uuid.UUID(payload.get("sub"))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Token expired or invalid: {str(e)}")
+
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    phone = user.mobile_number
+    if not phone and req.phone_number:
+        phone = req.phone_number.strip()
+        user.mobile_number = phone
+        db.commit()
+
+    if not phone:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No phone number is registered for this account. Please enter your phone number or use Email / Backup code.",
+        )
+
+    now = datetime.now(timezone.utc)
+    otp_code = generate_otp_code(6)
+    hashed_otp = hash_secret_code(otp_code)
+
+    # Invalidate previous unused OTPs
+    db.query(MFAOTP).filter(
+        MFAOTP.user_id == user.user_id,
+        MFAOTP.is_used == False,
+    ).update({"is_used": True})
+
+    otp_record = MFAOTP(
+        user_id=user.user_id,
+        otp_code_hash=hashed_otp,
+        attempts=0,
+        is_used=False,
+        expires_at=now + timedelta(minutes=10),
+    )
+    db.add(otp_record)
+    db.commit()
+
+    clean_phone = normalize_phone_number(phone)
+    masked_phone = mask_phone_number(clean_phone)
+
+    dispatch_res = SMSService.send_sms(
+        to_phone=clean_phone,
+        message_text=f"Your Property Base MFA verification code is: {otp_code}. Valid for 10 minutes. Do not share this code.",
+        category="MFA_SMS_OTP",
+        otp_code=otp_code,
+    )
+
+    res_data = {
+        "status": "success",
+        "masked_phone": masked_phone,
+        "message": f"A 6-digit verification code has been dispatched via SMS to {masked_phone}.",
+        "expires_in": "10 minutes",
+    }
+    if not dispatch_res.get("gateway_sent"):
+        res_data["dev_code"] = otp_code
+    return res_data
+
+
+@router.post("/mfa/verify-sms-otp", response_model=TokenResponse)
+def verify_mfa_sms_otp(
+    request: Request,
+    req: VerifySMSOTPRequest,
+    db: Session = Depends(get_db),
+) -> Any:
+    """
+    Verifies the 6-digit one-time code sent via SMS to the user's phone for MFA verification.
+    """
+    try:
+        payload = decode_token(req.mfa_pre_auth_token)
+        if payload.get("type") != "mfa_pre_auth":
+            raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid pre-auth token.")
+        user_id = uuid.UUID(payload.get("sub"))
+    except Exception as e:
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Token expired or invalid: {str(e)}")
+
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
+
+    now = datetime.now(timezone.utc)
+    hashed_input = hash_secret_code(req.otp_code)
+
+    otp_record = (
+        db.query(MFAOTP)
+        .filter(
+            MFAOTP.user_id == user.user_id,
+            MFAOTP.is_used == False,
+            MFAOTP.expires_at > now,
+        )
+        .order_by(MFAOTP.created_at.desc())
+        .first()
+    )
+
+    if not otp_record:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No valid or unexpired SMS verification code found. Please request a new one.",
+        )
+
+    otp_record.attempts += 1
+    if otp_record.otp_code_hash != hashed_input:
+        if otp_record.attempts >= 5:
+            otp_record.is_used = True
+            db.commit()
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail="Too many invalid attempts. Please request a new SMS code.",
+            )
+        db.commit()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Invalid verification code. {5 - otp_record.attempts} attempt(s) remaining.",
+        )
+
+    # Valid OTP
+    otp_record.is_used = True
+    user.status = UserStatus.ACTIVE
+    user.failed_login_attempts = 0
+
+    # AUTO-REFILL: If backup codes are depleted, generate 8 new backup codes now
+    unused_count = (
+        db.query(UserBackupCode)
+        .filter(UserBackupCode.user_id == user.user_id, UserBackupCode.is_used == False)
+        .count()
+    )
+
+    new_generated_codes = None
+    if unused_count == 0:
+        raw_new_codes = generate_backup_codes(count=8)
+        hashed_new_codes = [hash_secret_code(c) for c in raw_new_codes]
+
+        for h_code in hashed_new_codes:
+            new_entry = UserBackupCode(
+                user_id=user.user_id,
+                code_hash=h_code,
+                is_used=False,
+            )
+            db.add(new_entry)
+        user.backup_codes = hashed_new_codes
+        new_generated_codes = raw_new_codes
+
+    db.commit()
+
+    # Track Device & Context
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    user_agent = request.headers.get("user-agent", "Unknown")
+    salted_device_hash = hashlib.sha256(f"{user.user_id}:{req.device_hash}".encode()).hexdigest()
+
+    device = db.query(UserDevice).filter(UserDevice.device_hash == salted_device_hash).first()
+    if not device:
+        device = UserDevice(
+            user_id=user.user_id,
+            device_hash=salted_device_hash,
+            device_name=req.device_name or "Mobile MFA Browser",
+            os_platform="Web",
+            browser_engine="Browser",
+            is_trusted=True,
+        )
+        db.add(device)
+        db.commit()
+        db.refresh(device)
+    else:
+        device.last_seen_at = now
+        db.commit()
+
+    # Create active session
+    session_id = uuid.uuid4()
+    access_token, jti = create_access_token(
+        subject=str(user.user_id),
+        session_id=str(session_id),
+        role=user.role.value if hasattr(user.role, "value") else str(user.role),
+    )
+
+    user_session = UserSession(
+        session_id=session_id,
+        user_id=user.user_id,
+        token_jti=jti,
+        ip_address=client_ip,
+        user_agent=user_agent,
+        device_id=device.device_id,
+        status=SessionStatus.ACTIVE,
+        is_revoked=False,
+        expires_at=now + timedelta(minutes=30),
+    )
+    db.add(user_session)
+    db.commit()
+
+    risk_response = RiskAssessmentResponse(
+        total_risk_score=0.06,
+        risk_tier=RiskTier.LOW,
+        action_taken=SecurityAction.NO_ACTION,
+        behavior_deviation_score=0.05,
+        context_deviation_score=0.05,
+        device_deviation_score=0.05,
+        evaluation_time_ms=4.0,
+        feature_contributions={
+            "top_risk_factors": [{"feature": "mfa_sms_otp", "display_name": "One-Time SMS Code Verified", "impact": -0.5, "direction": "DECREASES_RISK"}],
+            "stream_contributions": {"behavioral": 0.0, "contextual": 0.0, "device": 0.0},
+        },
+    )
+
+    user_resp = UserResponse.from_orm(user)
+    if new_generated_codes:
+        user_resp.backup_codes = new_generated_codes
+
+    return TokenResponse(
+        access_token=access_token,
+        session_id=session_id,
+        user=user_resp,
+        risk_assessment=risk_response,
+        challenge_required=False,
+        new_backup_codes=new_generated_codes,
+    )
+
+
+
+
 @router.post("/forgot-password")
 def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -> Any:
     """
     Step 1: Request Password Reset
-    Input: email
+    Input: email or phone_number, channel ("EMAIL" | "SMS")
     Actions:
+      - Locate user by email or mobile_number.
       - Generate a 6-digit verification code with 10-minute expiration.
       - Store code hash in `MFAOTP`.
-      - Trigger email dispatch to user via SimulatedMailbox.
+      - Dispatches verification code via SMS or Email based on user's choice.
     """
-    user = db.query(User).filter(User.email == req.email.lower()).first()
-    # Always return success message to prevent user enumeration
+    user = None
+    if req.email and req.email.strip():
+        user = db.query(User).filter(User.email == req.email.strip().lower()).first()
+    elif req.phone_number and req.phone_number.strip():
+        clean_target = normalize_phone_number(req.phone_number.strip())
+        all_users = db.query(User).filter(User.mobile_number.isnot(None)).all()
+        for u in all_users:
+            if u.mobile_number and normalize_phone_number(u.mobile_number) == clean_target:
+                user = u
+                break
+
+    channel = (req.channel or "EMAIL").upper()
+
+    # Always return safe message if user not found to prevent enumeration
     if not user:
-        return {"message": "If an account matches this email, a 6-digit verification code has been dispatched."}
+        if channel == "SMS":
+            return {
+                "status": "success",
+                "channel": "SMS",
+                "message": "If an account matches these details, a 6-digit verification code has been dispatched via SMS.",
+            }
+        return {
+            "status": "success",
+            "channel": "EMAIL",
+            "message": "If an account matches this email, a 6-digit verification code has been dispatched.",
+        }
 
     # Generate 6-digit code
     otp_code = generate_otp_code(6)
@@ -1067,35 +1331,83 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -
     db.add(otp_record)
     db.commit()
 
-    # Dispatch email
-    dispatch_res = SimulatedMailbox.send_email(
-        to_email=user.email,
-        subject="Property Base - Password Reset Verification Code",
-        body_text=f"Your password reset verification code is: {otp_code}. This code expires in 10 minutes.",
-        category="MFA_OTP",
-        payload_data={"otp_code": otp_code, "email": user.email},
-    )
+    if channel == "SMS":
+        phone = user.mobile_number
+        if not phone and req.phone_number:
+            phone = req.phone_number.strip()
+            user.mobile_number = phone
+            db.commit()
 
-    res_data = {
-        "message": "If an account matches this email, a 6-digit verification code has been dispatched.",
-        "expires_in": "10 minutes",
-    }
-    if not dispatch_res.get("smtp_sent"):
-        res_data["dev_code"] = otp_code
-    return res_data
+        if not phone:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="No phone number is registered on this account. Please select Email verification or enter your registered mobile number.",
+            )
+
+        clean_phone = normalize_phone_number(phone)
+        masked_phone = mask_phone_number(clean_phone)
+
+        dispatch_res = SMSService.send_sms(
+            to_phone=clean_phone,
+            message_text=f"Your Property Base password reset verification code is: {otp_code}. Valid for 10 minutes. Do not share this code.",
+            category="PASSWORD_RESET_SMS",
+            otp_code=otp_code,
+        )
+
+        res_data = {
+            "status": "success",
+            "channel": "SMS",
+            "masked_phone": masked_phone,
+            "email": user.email,
+            "message": f"A 6-digit verification code has been dispatched via SMS to {masked_phone}.",
+            "expires_in": "10 minutes",
+        }
+        if not dispatch_res.get("gateway_sent"):
+            res_data["dev_code"] = otp_code
+        return res_data
+    else:
+        # Dispatch email
+        dispatch_res = SimulatedMailbox.send_email(
+            to_email=user.email,
+            subject="Property Base - Password Reset Verification Code",
+            body_text=f"Your password reset verification code is: {otp_code}. This code expires in 10 minutes.",
+            category="MFA_OTP",
+            payload_data={"otp_code": otp_code, "email": user.email},
+        )
+
+        res_data = {
+            "status": "success",
+            "channel": "EMAIL",
+            "email": user.email,
+            "message": "If an account matches this email, a 6-digit verification code has been dispatched.",
+            "expires_in": "10 minutes",
+        }
+        if not dispatch_res.get("smtp_sent"):
+            res_data["dev_code"] = otp_code
+        return res_data
 
 
 @router.post("/verify-reset-code")
 def verify_reset_code(req: VerifyResetCodeRequest, db: Session = Depends(get_db)) -> Any:
     """
-    Step 2: Verify verification code entered by user matches the one sent to their email.
+    Step 2: Verify verification code entered by user matches the one sent via SMS or Email.
     """
-    user = db.query(User).filter(User.email == req.email.lower()).first()
+    user = None
+    if req.email and req.email.strip():
+        user = db.query(User).filter(User.email == req.email.strip().lower()).first()
+    elif req.phone_number and req.phone_number.strip():
+        clean_target = normalize_phone_number(req.phone_number.strip())
+        all_users = db.query(User).filter(User.mobile_number.isnot(None)).all()
+        for u in all_users:
+            if u.mobile_number and normalize_phone_number(u.mobile_number) == clean_target:
+                user = u
+                break
+
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User account not found.")
 
     now = datetime.now(timezone.utc)
-    hashed_code = hash_secret_code(req.verification_code)
+    hashed_code = hash_secret_code(req.verification_code.strip())
 
     otp_record = (
         db.query(MFAOTP)
@@ -1133,6 +1445,7 @@ def verify_reset_code(req: VerifyResetCodeRequest, db: Session = Depends(get_db)
     reset_token = create_reset_token(user.user_id, user.email, expires_minutes=15)
     return {
         "status": "success",
+        "email": user.email,
         "message": "Verification code verified successfully! You may now set your new password.",
         "reset_token": reset_token,
     }
@@ -1144,7 +1457,24 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
     Step 3: Update existing password with a new different password.
     Requires password complexity (combination of uppercase, lowercase, number, special character).
     """
-    user = db.query(User).filter(User.email == req.email.lower()).first()
+    user = None
+    if req.email and req.email.strip():
+        user = db.query(User).filter(User.email == req.email.strip().lower()).first()
+    elif req.reset_token:
+        try:
+            payload = decode_token(req.reset_token)
+            user_id = uuid.UUID(payload.get("sub"))
+            user = db.query(User).filter(User.user_id == user_id).first()
+        except Exception:
+            pass
+    elif req.phone_number and req.phone_number.strip():
+        clean_target = normalize_phone_number(req.phone_number.strip())
+        all_users = db.query(User).filter(User.mobile_number.isnot(None)).all()
+        for u in all_users:
+            if u.mobile_number and normalize_phone_number(u.mobile_number) == clean_target:
+                user = u
+                break
+
     if not user:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User account not found.")
 
