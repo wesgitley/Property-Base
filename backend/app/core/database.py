@@ -49,17 +49,31 @@ SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
 
+from sqlalchemy.dialects.postgresql import UUID as PG_UUID
+
+
 class GUID(TypeDecorator):
     """Platform-independent GUID/UUID type supporting PostgreSQL and SQLite."""
     impl = String(36)
     cache_ok = True
 
+    def load_dialect_impl(self, dialect):
+        if dialect.name == "postgresql":
+            return dialect.type_descriptor(PG_UUID(as_uuid=True))
+        else:
+            return dialect.type_descriptor(String(36))
+
     def process_bind_param(self, value, dialect):
         if value is None:
             return None
-        if isinstance(value, uuid.UUID):
+        if dialect.name == "postgresql":
+            if isinstance(value, uuid.UUID):
+                return value
+            return uuid.UUID(str(value))
+        else:
+            if isinstance(value, uuid.UUID):
+                return str(value)
             return str(value)
-        return str(value)
 
     def process_result_value(self, value, dialect):
         if value is None:
@@ -68,7 +82,7 @@ class GUID(TypeDecorator):
             return value
         try:
             return uuid.UUID(str(value))
-        except ValueError:
+        except (ValueError, AttributeError):
             return value
 
 
