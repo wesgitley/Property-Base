@@ -29,6 +29,48 @@ const GoogleIcon = () => (
   </svg>
 );
 
+const COUNTRY_CODES = [
+  { code: '+254', name: 'Kenya', flag: '🇰🇪' },
+  { code: '+256', name: 'Uganda', flag: '🇺🇬' },
+  { code: '+255', name: 'Tanzania', flag: '🇹🇿' },
+  { code: '+250', name: 'Rwanda', flag: '🇷🇼' },
+  { code: '+234', name: 'Nigeria', flag: '🇳🇬' },
+  { code: '+27', name: 'South Africa', flag: '🇿🇦' },
+  { code: '+251', name: 'Ethiopia', flag: '🇪🇹' },
+  { code: '+233', name: 'Ghana', flag: '🇬🇭' },
+  { code: '+20', name: 'Egypt', flag: '🇪🇬' },
+  { code: '+1', name: 'USA / Canada', flag: '🇺🇸' },
+  { code: '+44', name: 'United Kingdom', flag: '🇬🇧' },
+  { code: '+91', name: 'India', flag: '🇮🇳' },
+  { code: '+971', name: 'UAE', flag: '🇦🇪' },
+  { code: '+966', name: 'Saudi Arabia', flag: '🇸🇦' },
+  { code: '+49', name: 'Germany', flag: '🇩🇪' },
+  { code: '+33', name: 'France', flag: '🇫🇷' },
+  { code: '+61', name: 'Australia', flag: '🇦🇺' },
+  { code: '+86', name: 'China', flag: '🇨🇳' },
+  { code: '+81', name: 'Japan', flag: '🇯🇵' },
+];
+
+const handlePhoneDigitsChange = (raw, setDigits, setCode) => {
+  let val = String(raw).trim();
+  // Auto-detect country code if pasted with +
+  if (val.startsWith('+')) {
+    const matched = COUNTRY_CODES.find((c) => val.startsWith(c.code));
+    if (matched && setCode) {
+      setCode(matched.code);
+      val = val.substring(matched.code.length);
+    }
+  }
+  // Strip non-digits
+  val = val.replace(/\D/g, '');
+  // Strip leading 0
+  if (val.startsWith('0')) {
+    val = val.substring(1);
+  }
+  // Keep up to 9 digits
+  setDigits(val.slice(0, 9));
+};
+
 export default function App() {
   // Navigation tabs: 'login' | 'register' | 'mfa' | 'forgot'
   const [activeTab, setActiveTab] = useState('login');
@@ -42,7 +84,8 @@ export default function App() {
   // Registration form state
   const [regFirstName, setRegFirstName] = useState('');
   const [regLastName, setRegLastName] = useState('');
-  const [regMobile, setRegMobile] = useState('');
+  const [regCountryCode, setRegCountryCode] = useState('+254');
+  const [regPhoneDigits, setRegPhoneDigits] = useState('');
   const [regUsername, setRegUsername] = useState('');
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
@@ -54,6 +97,8 @@ export default function App() {
   const [mfaMethod, setMfaMethod] = useState('backup'); // 'backup' | 'email_otp' | 'sms_otp'
   const [emailOtpInput, setEmailOtpInput] = useState('');
   const [smsOtpInput, setSmsOtpInput] = useState('');
+  const [mfaCountryCode, setMfaCountryCode] = useState('+254');
+  const [mfaPhoneDigits, setMfaPhoneDigits] = useState('');
   const [mfaPhoneInput, setMfaPhoneInput] = useState('');
   const [mfaPhoneMasked, setMfaPhoneMasked] = useState('');
   const [backupCodesDepleted, setBackupCodesDepleted] = useState(false);
@@ -66,7 +111,8 @@ export default function App() {
 
   // Forgot password & reset state
   const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotPhone, setForgotPhone] = useState('');
+  const [forgotCountryCode, setForgotCountryCode] = useState('+254');
+  const [forgotPhoneDigits, setForgotPhoneDigits] = useState('');
   const [forgotChannel, setForgotChannel] = useState('EMAIL'); // 'EMAIL' | 'SMS'
   const [forgotTargetLabel, setForgotTargetLabel] = useState('');
   const [resetCode, setResetCode] = useState('');
@@ -116,16 +162,22 @@ export default function App() {
       return;
     }
 
+    if (regPhoneDigits.trim().length < 9) {
+      setStatusMessage({ type: 'error', text: 'Please enter a valid 9-digit mobile phone number.' });
+      return;
+    }
+
     setLoading(true);
 
     try {
+      const fullMobile = `${regCountryCode}${regPhoneDigits.trim()}`;
       const res = await fetch(`${API_BASE}/auth/register`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           first_name: regFirstName,
           last_name: regLastName,
-          mobile_number: regMobile,
+          mobile_number: fullMobile,
           username: regUsername,
           email: regEmail,
           password: regPassword,
@@ -313,12 +365,13 @@ export default function App() {
     clearMessages();
     setLoading(true);
     try {
+      const phoneToSend = customPhone || (mfaPhoneDigits.trim() ? `${mfaCountryCode}${mfaPhoneDigits.trim()}` : (mfaPhoneInput || null));
       const res = await fetch(`${API_BASE}/auth/mfa/send-sms-otp`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           mfa_pre_auth_token: preAuthToken,
-          phone_number: customPhone || mfaPhoneInput || null,
+          phone_number: phoneToSend,
         }),
       });
       const data = await res.json();
@@ -382,13 +435,31 @@ export default function App() {
   const handleRequestPasswordReset = async (e) => {
     e.preventDefault();
     clearMessages();
+
+    if (forgotChannel === 'SMS') {
+      if (!forgotEmail.trim()) {
+        setStatusMessage({ type: 'error', text: 'Please enter your registered account email.' });
+        return;
+      }
+      if (forgotPhoneDigits.trim().length < 9) {
+        setStatusMessage({ type: 'error', text: 'Please enter your matching 9-digit registered mobile phone number.' });
+        return;
+      }
+    } else {
+      if (!forgotEmail.trim()) {
+        setStatusMessage({ type: 'error', text: 'Please enter your registered email address.' });
+        return;
+      }
+    }
+
     setLoading(true);
 
     try {
+      const fullPhone = forgotChannel === 'SMS' ? `${forgotCountryCode}${forgotPhoneDigits.trim()}` : null;
       const payload = {
         channel: forgotChannel,
-        email: forgotEmail.trim() || null,
-        phone_number: forgotPhone.trim() || null,
+        email: forgotEmail.trim(),
+        phone_number: fullPhone,
       };
 
       const res = await fetch(`${API_BASE}/auth/forgot-password`, {
@@ -399,12 +470,12 @@ export default function App() {
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || 'Error requesting reset.');
 
-      setForgotTargetLabel(data.masked_phone || data.email || forgotEmail || forgotPhone);
+      setForgotTargetLabel(data.masked_phone || data.email || forgotEmail);
       setForgotMode('verify');
       setStatusMessage({
         type: 'success',
         text: data.dev_code
-          ? `Verification Code: ${data.dev_code} (Dispatched via ${forgotChannel})`
+          ? `Verification Code: ${data.dev_code} (Dispatched via ${forgotChannel} to ${data.masked_phone || data.email})`
           : (data.message || `A 6-digit verification code has been dispatched via ${forgotChannel}.`),
       });
     } catch (err) {
@@ -426,12 +497,13 @@ export default function App() {
 
     setLoading(true);
     try {
+      const fullPhone = forgotChannel === 'SMS' ? `${forgotCountryCode}${forgotPhoneDigits.trim()}` : null;
       const res = await fetch(`${API_BASE}/auth/verify-reset-code`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: forgotEmail.trim() || null,
-          phone_number: forgotPhone.trim() || null,
+          phone_number: fullPhone,
           verification_code: resetCode.trim(),
         }),
       });
@@ -474,12 +546,13 @@ export default function App() {
 
     setLoading(true);
     try {
+      const fullPhone = (forgotChannel === 'SMS' && forgotPhoneDigits.trim()) ? `${forgotCountryCode}${forgotPhoneDigits.trim()}` : null;
       const res = await fetch(`${API_BASE}/auth/reset-password`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           email: forgotEmail.trim() || null,
-          phone_number: forgotPhone.trim() || null,
+          phone_number: fullPhone,
           verification_code: resetCode.trim(),
           reset_token: resetToken,
           new_password: newPassword,
@@ -1078,16 +1151,44 @@ export default function App() {
                     />
                   </div>
 
-                  <div style={styles.inputGroup}>
-                    <span style={styles.inputIcon}><Phone size={18} color="#6366F1" /></span>
-                    <input
-                      type="tel"
-                      required
-                      placeholder="Mobile Phone Number"
-                      value={regMobile}
-                      onChange={(e) => setRegMobile(e.target.value)}
-                      style={styles.textInput}
-                    />
+                  <div style={{ display: 'flex', gap: '8px', marginBottom: '18px' }}>
+                    <div style={{ width: '145px', flexShrink: 0 }}>
+                      <select
+                        value={regCountryCode}
+                        onChange={(e) => setRegCountryCode(e.target.value)}
+                        style={{
+                          width: '100%',
+                          height: '46px',
+                          padding: '0 8px',
+                          borderRadius: '8px',
+                          border: '1px solid #E2E8F0',
+                          background: '#F8FAFC',
+                          fontSize: '13px',
+                          fontWeight: '600',
+                          color: '#1E293B',
+                          cursor: 'pointer',
+                          outline: 'none',
+                        }}
+                      >
+                        {COUNTRY_CODES.map((c) => (
+                          <option key={c.code} value={c.code}>
+                            {c.flag} {c.code} ({c.name})
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div style={{ ...styles.inputGroup, flex: 1, marginBottom: 0 }}>
+                      <span style={styles.inputIcon}><Phone size={18} color="#6366F1" /></span>
+                      <input
+                        type="tel"
+                        required
+                        maxLength={9}
+                        placeholder="712 345 678 (9 digits)"
+                        value={regPhoneDigits}
+                        onChange={(e) => handlePhoneDigitsChange(e.target.value, setRegPhoneDigits, setRegCountryCode)}
+                        style={{ ...styles.textInput, letterSpacing: '1px' }}
+                      />
+                    </div>
                   </div>
 
                   <div style={styles.inputGroup}>
@@ -1350,40 +1451,67 @@ export default function App() {
 
                   {mfaMethod === 'sms_otp' && (
                     <form onSubmit={handleVerifySmsOtp}>
-                      {mfaPhoneMasked ? (
-                        <div style={{ ...styles.infoBanner, display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '8px 12px' }}>
-                          <span>Phone: <strong>{mfaPhoneMasked}</strong></span>
-                          <button
-                            type="button"
-                            onClick={() => handleRequestSmsOtp()}
-                            disabled={loading}
-                            style={{ ...styles.textLink, fontSize: '12px' }}
-                          >
-                            {loading ? 'Sending...' : 'Send / Resend SMS'}
-                          </button>
+                      {mfaPhoneMasked && (
+                        <div style={{ ...styles.infoBanner, marginBottom: '14px', textAlign: 'center' }}>
+                          Registered Phone: <strong>{mfaPhoneMasked}</strong>
                         </div>
-                      ) : (
-                        <div style={{ marginBottom: '14px' }}>
-                          <div style={styles.inputGroup}>
+                      )}
+
+                      <div style={{ marginBottom: '16px' }}>
+                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
+                          Confirm Your Registered Phone:
+                        </label>
+                        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
+                          <div style={{ width: '145px', flexShrink: 0 }}>
+                            <select
+                              value={mfaCountryCode}
+                              onChange={(e) => setMfaCountryCode(e.target.value)}
+                              style={{
+                                width: '100%',
+                                height: '46px',
+                                padding: '0 8px',
+                                borderRadius: '8px',
+                                border: '1px solid #E2E8F0',
+                                background: '#F8FAFC',
+                                fontSize: '13px',
+                                fontWeight: '600',
+                                color: '#1E293B',
+                                cursor: 'pointer',
+                                outline: 'none',
+                              }}
+                            >
+                              {COUNTRY_CODES.map((c) => (
+                                <option key={c.code} value={c.code}>
+                                  {c.flag} {c.code} ({c.name})
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                          <div style={{ ...styles.inputGroup, flex: 1, marginBottom: 0 }}>
                             <span style={styles.inputIcon}><Phone size={18} color="#6366F1" /></span>
                             <input
                               type="tel"
-                              placeholder="Mobile Number (e.g. +254 7...)"
-                              value={mfaPhoneInput}
-                              onChange={(e) => setMfaPhoneInput(e.target.value)}
-                              style={styles.textInput}
+                              maxLength={9}
+                              placeholder="712 345 678 (9 digits)"
+                              value={mfaPhoneDigits}
+                              onChange={(e) => handlePhoneDigitsChange(e.target.value, setMfaPhoneDigits, setMfaCountryCode)}
+                              style={{ ...styles.textInput, letterSpacing: '1px' }}
                             />
                           </div>
-                          <button
-                            type="button"
-                            onClick={() => handleRequestSmsOtp(mfaPhoneInput)}
-                            disabled={loading || !mfaPhoneInput.trim()}
-                            style={{ ...(loading || !mfaPhoneInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn), padding: '8px 12px', fontSize: '13px', marginBottom: '8px' }}
-                          >
-                            {loading ? 'Sending SMS Code...' : 'SEND 6-DIGIT CODE VIA SMS'}
-                          </button>
                         </div>
-                      )}
+                        <button
+                          type="button"
+                          onClick={() => handleRequestSmsOtp(`${mfaCountryCode}${mfaPhoneDigits.trim()}`)}
+                          disabled={loading || mfaPhoneDigits.trim().length < 9}
+                          style={{
+                            ...(loading || mfaPhoneDigits.trim().length < 9 ? styles.primaryBtnDisabled : styles.primaryBtn),
+                            padding: '10px 14px',
+                            fontSize: '13px',
+                          }}
+                        >
+                          {loading ? 'Confirming & Sending SMS...' : 'CONFIRM PHONE & SEND 6-DIGIT CODE'}
+                        </button>
+                      </div>
 
                       <div style={styles.inputGroup}>
                         <span style={styles.inputIcon}><KeyRound size={18} color="#6366F1" /></span>
@@ -1413,7 +1541,8 @@ export default function App() {
                       <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
                         <button
                           type="button"
-                          onClick={() => handleRequestSmsOtp()}
+                          onClick={() => handleRequestSmsOtp(`${mfaCountryCode}${mfaPhoneDigits.trim()}`)}
+                          disabled={loading || mfaPhoneDigits.trim().length < 9}
                           style={styles.textLink}
                         >
                           Resend SMS Code
@@ -1545,37 +1674,69 @@ export default function App() {
                       ) : (
                         <>
                           <div style={styles.inputGroup}>
-                            <span style={styles.inputIcon}><Phone size={18} color="#6366F1" /></span>
-                            <input
-                              type="tel"
-                              placeholder="Registered Mobile Phone (e.g. +254 7...)"
-                              value={forgotPhone}
-                              onChange={(e) => setForgotPhone(e.target.value)}
-                              style={styles.textInput}
-                            />
-                          </div>
-                          <div style={{ ...styles.inputGroup, marginBottom: '10px' }}>
                             <span style={styles.inputIcon}><Mail size={18} color="#6366F1" /></span>
                             <input
                               type="email"
-                              placeholder="Or Your Registered Email"
+                              required
+                              placeholder="Your Registered Account Email"
                               value={forgotEmail}
                               onChange={(e) => setForgotEmail(e.target.value)}
                               style={styles.textInput}
                             />
                           </div>
-                          <p style={{ ...styles.helperText, marginBottom: '14px', fontSize: '11px' }}>
-                            * Enter your mobile number or account email. The 6-digit code will be delivered to your registered phone.
-                          </p>
+
+                          <div style={{ display: 'flex', gap: '8px', marginBottom: '12px' }}>
+                            <div style={{ width: '145px', flexShrink: 0 }}>
+                              <select
+                                value={forgotCountryCode}
+                                onChange={(e) => setForgotCountryCode(e.target.value)}
+                                style={{
+                                  width: '100%',
+                                  height: '46px',
+                                  padding: '0 8px',
+                                  borderRadius: '8px',
+                                  border: '1px solid #E2E8F0',
+                                  background: '#F8FAFC',
+                                  fontSize: '13px',
+                                  fontWeight: '600',
+                                  color: '#1E293B',
+                                  cursor: 'pointer',
+                                  outline: 'none',
+                                }}
+                              >
+                                {COUNTRY_CODES.map((c) => (
+                                  <option key={c.code} value={c.code}>
+                                    {c.flag} {c.code} ({c.name})
+                                  </option>
+                                ))}
+                              </select>
+                            </div>
+                            <div style={{ ...styles.inputGroup, flex: 1, marginBottom: 0 }}>
+                              <span style={styles.inputIcon}><Phone size={18} color="#6366F1" /></span>
+                              <input
+                                type="tel"
+                                required
+                                maxLength={9}
+                                placeholder="712 345 678 (9 digits)"
+                                value={forgotPhoneDigits}
+                                onChange={(e) => handlePhoneDigitsChange(e.target.value, setForgotPhoneDigits, setForgotCountryCode)}
+                                style={{ ...styles.textInput, letterSpacing: '1px' }}
+                              />
+                            </div>
+                          </div>
+
+                          <div style={{ background: '#EFF6FF', border: '1px solid #BFDBFE', borderRadius: '8px', padding: '10px 12px', marginBottom: '16px', fontSize: '12px', color: '#1E40AF', lineHeight: '18px' }}>
+                            🔒 <strong>Account Confirmation:</strong> Enter your registered account email and matching 9-digit phone number. The 6-digit verification code will only be sent after both details match our records.
+                          </div>
                         </>
                       )}
 
                       <button
                         type="submit"
-                        disabled={loading || (forgotChannel === 'EMAIL' ? !forgotEmail.trim() : (!forgotPhone.trim() && !forgotEmail.trim()))}
-                        style={loading || (forgotChannel === 'EMAIL' ? !forgotEmail.trim() : (!forgotPhone.trim() && !forgotEmail.trim())) ? styles.primaryBtnDisabled : styles.primaryBtn}
+                        disabled={loading || (forgotChannel === 'EMAIL' ? !forgotEmail.trim() : (!forgotEmail.trim() || forgotPhoneDigits.trim().length < 9))}
+                        style={loading || (forgotChannel === 'EMAIL' ? !forgotEmail.trim() : (!forgotEmail.trim() || forgotPhoneDigits.trim().length < 9)) ? styles.primaryBtnDisabled : styles.primaryBtn}
                       >
-                        {loading ? 'Sending Code...' : (forgotChannel === 'SMS' ? 'SEND 6-DIGIT CODE VIA SMS' : 'SEND 6-DIGIT CODE TO EMAIL')}
+                        {loading ? 'Confirming Details & Sending Code...' : (forgotChannel === 'SMS' ? 'CONFIRM DETAILS & SEND 6-DIGIT CODE' : 'SEND 6-DIGIT CODE TO EMAIL')}
                       </button>
                     </form>
                   )}

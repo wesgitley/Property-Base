@@ -23,16 +23,22 @@ logger = logging.getLogger(__name__)
 def normalize_phone_number(phone: str) -> str:
     """
     Normalizes phone numbers to standard international E.164 format.
-    Handles common Kenyan phone patterns (07... / 01...) by prefixing +254.
+    Handles:
+      - 9-digit local Kenyan numbers (7... or 1...) -> +254...
+      - 10-digit Kenyan numbers (07... or 01...) -> +254...
+      - 12-digit Kenyan numbers without leading + (2547...) -> +254...
+      - Any valid international E.164 number.
     """
-    cleaned = re.sub(r"[\s\-\(\)\.]", "", phone.strip())
+    cleaned = re.sub(r"[\s\-\(\)\.]", "", str(phone).strip())
+    if cleaned.startswith("+"):
+        return cleaned
     if cleaned.startswith("0") and len(cleaned) == 10:
-        cleaned = "+254" + cleaned[1:]
-    elif cleaned.startswith("254") and len(cleaned) == 12:
-        cleaned = "+" + cleaned
-    elif not cleaned.startswith("+"):
-        cleaned = "+" + cleaned
-    return cleaned
+        return "+254" + cleaned[1:]
+    if len(cleaned) == 9 and (cleaned.startswith("7") or cleaned.startswith("1")):
+        return "+254" + cleaned
+    if cleaned.startswith("254") and len(cleaned) == 12:
+        return "+" + cleaned
+    return "+" + cleaned
 
 
 def mask_phone_number(phone: str) -> str:

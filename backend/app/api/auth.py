@@ -1061,15 +1061,24 @@ def send_mfa_sms_otp(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="User not found.")
 
     phone = user.mobile_number
-    if not phone and req.phone_number:
-        phone = req.phone_number.strip()
-        user.mobile_number = phone
-        db.commit()
+    if req.phone_number and req.phone_number.strip():
+        input_clean = normalize_phone_number(req.phone_number.strip())
+        if phone:
+            stored_clean = normalize_phone_number(phone)
+            if input_clean != stored_clean:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="The phone number entered does not match the mobile number registered for this account.",
+                )
+        else:
+            phone = input_clean
+            user.mobile_number = input_clean
+            db.commit()
 
     if not phone:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="No phone number is registered for this account. Please enter your phone number or use Email / Backup code.",
+            detail="No phone number is registered for this account. Please enter your registered mobile phone number.",
         )
 
     now = datetime.now(timezone.utc)
@@ -1283,32 +1292,61 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -
       - Store code hash in `MFAOTP`.
       - Dispatches verification code via SMS or Email based on user's choice.
     """
-    user = None
-    if req.email and req.email.strip():
-        user = db.query(User).filter(User.email == req.email.strip().lower()).first()
-    elif req.phone_number and req.phone_number.strip():
-        clean_target = normalize_phone_number(req.phone_number.strip())
-        all_users = db.query(User).filter(User.mobile_number.isnot(None)).all()
-        for u in all_users:
-            if u.mobile_number and normalize_phone_number(u.mobile_number) == clean_target:
-                user = u
-                break
-
     channel = (req.channel or "EMAIL").upper()
+    user = None
 
-    # Always return safe message if user not found to prevent enumeration
-    if not user:
-        if channel == "SMS":
+    if channel == "SMS":
+        # Both email and phone_number are required to confirm identity
+        if not req.email or not req.email.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please enter your registered account email.",
+            )
+        if not req.phone_number or not req.phone_number.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please enter your registered mobile phone number.",
+            )
+
+        email_clean = req.email.strip().lower()
+        user = db.query(User).filter(User.email == email_clean).first()
+        if not user:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No account found matching this email address.",
+            )
+
+        # Confirm user's entered phone matches the registered mobile number
+        if not user.mobile_number:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="This account does not have a registered mobile phone number. Please use Email verification or contact support.",
+            )
+
+        input_clean = normalize_phone_number(req.phone_number.strip())
+        stored_clean = normalize_phone_number(user.mobile_number.strip())
+        if input_clean != stored_clean:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="The phone number entered does not match the mobile number registered for this account. Please check and try again.",
+            )
+
+        clean_phone = stored_clean
+    else:
+        # Email channel
+        if not req.email or not req.email.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Please enter your registered email address.",
+            )
+        email_clean = req.email.strip().lower()
+        user = db.query(User).filter(User.email == email_clean).first()
+        if not user:
             return {
                 "status": "success",
-                "channel": "SMS",
-                "message": "If an account matches these details, a 6-digit verification code has been dispatched via SMS.",
+                "channel": "EMAIL",
+                "message": "If an account matches this email, a 6-digit verification code has been dispatched.",
             }
-        return {
-            "status": "success",
-            "channel": "EMAIL",
-            "message": "If an account matches this email, a 6-digit verification code has been dispatched.",
-        }
 
     # Generate 6-digit code
     otp_code = generate_otp_code(6)
@@ -1332,19 +1370,6 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -
     db.commit()
 
     if channel == "SMS":
-        phone = user.mobile_number
-        if not phone and req.phone_number:
-            phone = req.phone_number.strip()
-            user.mobile_number = phone
-            db.commit()
-
-        if not phone:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="No phone number is registered on this account. Please select Email verification or enter your registered mobile number.",
-            )
-
-        clean_phone = normalize_phone_number(phone)
         masked_phone = mask_phone_number(clean_phone)
 
         dispatch_res = SMSService.send_sms(
