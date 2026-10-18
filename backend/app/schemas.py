@@ -151,6 +151,8 @@ class LoginStep1Response(BaseModel):
     user_id: uuid.UUID
     email: EmailStr
     backup_codes_depleted: Optional[bool] = False
+    mobile_number: Optional[str] = None
+    masked_phone: Optional[str] = None
 
 
 class MFABackupCodeVerifyRequest(BaseModel):
@@ -171,18 +173,34 @@ class VerifyEmailOTPRequest(BaseModel):
     device_name: Optional[str] = "Standard Browser"
 
 
+class SendSMSOTPRequest(BaseModel):
+    mfa_pre_auth_token: str
+    phone_number: Optional[str] = None
+
+
+class VerifySMSOTPRequest(BaseModel):
+    mfa_pre_auth_token: str
+    otp_code: str
+    device_hash: Optional[str] = "browser_default_hash"
+    device_name: Optional[str] = "Standard Browser"
+
+
 
 class ForgotPasswordRequest(BaseModel):
-    email: EmailStr
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
+    channel: Optional[str] = "EMAIL"  # "EMAIL" | "SMS"
 
 
 class VerifyResetCodeRequest(BaseModel):
-    email: EmailStr
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
     verification_code: str
 
 
 class ResetPasswordRequest(BaseModel):
-    email: EmailStr
+    email: Optional[str] = None
+    phone_number: Optional[str] = None
     verification_code: Optional[str] = None
     reset_token: Optional[str] = None
     new_password: str
