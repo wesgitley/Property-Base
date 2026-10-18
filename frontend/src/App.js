@@ -1144,7 +1144,7 @@ export default function App() {
                     <input
                       type="text"
                       required
-                      placeholder="Username (unique identifier)"
+                      placeholder="Username"
                       value={regUsername}
                       onChange={(e) => setRegUsername(e.target.value)}
                       style={styles.textInput}
