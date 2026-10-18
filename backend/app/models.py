@@ -57,6 +57,7 @@ class SecurityAction(str, enum.Enum):
 
 class MFAChannel(str, enum.Enum):
     EMAIL_OTP = "EMAIL_OTP"
+    SMS_OTP = "SMS_OTP"
     BACKUP_CODE = "BACKUP_CODE"
     BIOMETRIC_LIVENESS = "BIOMETRIC_LIVENESS"
     OUT_OF_BAND_LINK = "OUT_OF_BAND_LINK"
