@@ -31,7 +31,31 @@ import {
   Sparkles,
   UploadCloud,
   Camera,
+  KeyRound,
+  Lock,
+  Mail,
+  RefreshCw,
+  Copy,
+  Download,
 } from 'lucide-react';
+
+const API_BASE = process.env.REACT_APP_API_URL || 'http://localhost:8000/api/v1';
+
+// Helper to generate 3 unique single-use backup codes specifically for editing/deleting a property listing
+const generateListingBackupCodes = (count = 3) => {
+  const chars = '23456789ABCDEFGHJKLMNPQRSTUVWXYZ';
+  const codes = [];
+  for (let i = 0; i < count; i += 1) {
+    let part1 = '';
+    let part2 = '';
+    for (let j = 0; j < 4; j += 1) {
+      part1 += chars.charAt(Math.floor(Math.random() * chars.length));
+      part2 += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    codes.push(`${part1}-${part2}`);
+  }
+  return codes;
+};
 
 // ── SYNTHETIC BUYERS POOL (FOR REALISTIC OFFER GENERATION) ───────────────────
 const SYNTHETIC_BUYER_POOL = [
@@ -101,29 +125,68 @@ const formatCurrency = (amount) =>
   }).format(amount);
 
 // ── MAIN SELLER DASHBOARD COMPONENT ──────────────────────────────────────────
-export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
+export default function SellerDashboard({
+  user,
+  token,
+  onUserUpdate,
+  onShowBackupCodes,
+  onLogout,
+  onSwitchToAdmin,
+}) {
   // Navigation & layout state
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [activeNav, setActiveNav] = useState('listings');
 
-  // Identify user storage key so each account has isolated listings & offers
+  // Identify user storage key so each account has isolated listings, offers & listing MFA codes
   const userKey = user?.email || user?.username || 'new_seller';
   const storageKeyListings = `pb_listings_${userKey}`;
   const storageKeyOffers = `pb_offers_${userKey}`;
+  const storageKeyListingMfa = `pb_listing_mfa_${userKey}`;
 
   // Listings state: New users start with an EMPTY portfolio ([]), or load previously posted listings
   const [listings, setListings] = useState(() => {
     try {
       const saved = localStorage.getItem(storageKeyListings);
       if (saved !== null) {
-        return JSON.parse(saved);
+        const parsed = JSON.parse(saved);
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
       }
     } catch (e) {
       console.error('Failed to load listings from storage', e);
     }
-    // Brand new user starts with 0 listings!
     return [];
   });
+
+  // Listing MFA Backup Codes state (random backup codes used to edit/delete ANY property listing)
+  const [listingMfa, setListingMfa] = useState(() => {
+    try {
+      const saved = localStorage.getItem(storageKeyListingMfa);
+      if (saved !== null) {
+        const parsed = JSON.parse(saved);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            initialized: Boolean(parsed.initialized),
+            codes: Array.isArray(parsed.codes) ? parsed.codes : [],
+            notificationVisible: Boolean(parsed.notificationVisible),
+            notificationReason: parsed.notificationReason || 'FIRST_LISTING',
+            lastSeenToken: parsed.lastSeenToken || '',
+          };
+        }
+      }
+    } catch (e) {
+      console.error('Failed to load listing MFA state from storage', e);
+    }
+    return {
+      initialized: false,
+      codes: [],
+      notificationVisible: false,
+      notificationReason: 'FIRST_LISTING',
+      lastSeenToken: '',
+    };
+  });
+  const [bannerCopied, setBannerCopied] = useState(false);
 
   // Offers state: New users start with 0 offers ([]), or load previously received offers
   const [offers, setOffers] = useState(() => {
@@ -135,11 +198,10 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
     } catch (e) {
       console.error('Failed to load offers from storage', e);
     }
-    // Brand new user starts with 0 offers!
     return [];
   });
 
-  // Persist user-specific listings & offers across sessions
+  // Persist user-specific listings, offers & listing MFA state across sessions
   useEffect(() => {
     try {
       localStorage.setItem(storageKeyListings, JSON.stringify(listings));
@@ -155,6 +217,14 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
       console.error(e);
     }
   }, [offers, storageKeyOffers]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(storageKeyListingMfa, JSON.stringify(listingMfa));
+    } catch (e) {
+      console.error(e);
+    }
+  }, [listingMfa, storageKeyListingMfa]);
 
   // Filters & Search
   const [searchQuery, setSearchQuery] = useState('');
@@ -188,9 +258,384 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
   // Status feedback toast
   const [feedback, setFeedback] = useState(null); // { type: 'success' | 'error', text: '' }
 
+  // ── LISTING BACKUP CODES POPUP MODAL ──────────────────────────────────────
+  const [listingBackupModal, setListingBackupModal] = useState({
+    isOpen: false,
+    propertyId: '',
+    propertyTitle: '',
+    codes: [],
+    isRefill: false,
+    copied: false,
+  });
+
+  // ── STEP-UP IDENTITY VERIFICATION & ANTI-ATO PROTECTION STATE ─────────────
+  const [backupCodesRemaining, setBackupCodesRemaining] = useState(8);
+  const [stepUpModal, setStepUpModal] = useState({
+    isOpen: false,
+    actionType: '', // 'EDIT_LISTING' | 'DELETE_LISTING' | 'UPDATE_PROFILE'
+    actionTitle: '',
+    actionSubtitle: '',
+    targetLabel: '',
+    targetPropertyId: null, // Set when verifying for a property listing
+    method: 'backup', // 'backup' | 'email_otp'
+    codeInput: '',
+    loading: false,
+    sendingEmail: false,
+    emailSentMessage: '',
+    error: '',
+    onVerified: null,
+  });
+
+  // ── MY PROFILE (SETTINGS) STATE ────────────────────────────────────────────
+  const [isProfileUnlocked, setIsProfileUnlocked] = useState(false);
+  const [profileSaving, setProfileSaving] = useState(false);
+  const [generatingCodes, setGeneratingCodes] = useState(false);
+  const [profileForm, setProfileForm] = useState({
+    first_name: user?.first_name || '',
+    last_name: user?.last_name || '',
+    username: user?.username || '',
+    mobile_number: user?.mobile_number || '',
+    email: user?.email || '',
+  });
+
+  useEffect(() => {
+    setProfileForm({
+      first_name: user?.first_name || '',
+      last_name: user?.last_name || '',
+      username: user?.username || '',
+      mobile_number: user?.mobile_number || '',
+      email: user?.email || '',
+    });
+  }, [user]);
+
+  // Fetch remaining backup codes count from backend security overview
+  useEffect(() => {
+    if (!token) return;
+    fetch(`${API_BASE}/users/me/security`, {
+      headers: { Authorization: `Bearer ${token}` },
+    })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && typeof data.backup_codes_remaining === 'number') {
+          setBackupCodesRemaining(data.backup_codes_remaining);
+        }
+      })
+      .catch(() => {});
+  }, [token, activeNav]);
+
   const showToast = (type, text) => {
     setFeedback({ type, text });
     setTimeout(() => setFeedback(null), 4500);
+  };
+
+  // Automatically regenerate a new set of listing backup codes and display them on screen
+  // once all backup codes have been used up and the user logs back in to the web application!
+  useEffect(() => {
+    if (!token) return;
+    if (listingMfa.lastSeenToken !== token) {
+      if (listingMfa.initialized && listingMfa.codes.length === 0) {
+        const freshCodes = generateListingBackupCodes(3);
+        setListingMfa({
+          initialized: true,
+          codes: freshCodes,
+          notificationVisible: true,
+          notificationReason: 'REGENERATED_ON_LOGIN',
+          lastSeenToken: token,
+        });
+        setListingBackupModal({
+          isOpen: true,
+          propertyId: 'all',
+          propertyTitle: 'All Property Listings',
+          codes: freshCodes,
+          isRefill: true,
+          copied: false,
+        });
+        setFeedback({
+          type: 'success',
+          text: 'Welcome back! Since all your previous listing backup codes were used up, a new set of 3 backup codes has been generated for your listings.',
+        });
+      } else {
+        setListingMfa((prev) => ({
+          ...prev,
+          lastSeenToken: token,
+        }));
+      }
+    }
+  }, [token, listingMfa.initialized, listingMfa.codes.length, listingMfa.lastSeenToken]);
+
+  // ── LISTING BACKUP CODES POPUP & BANNER HELPERS ────────────────────────────
+  const copyListingCodesToClipboard = (codesArray) => {
+    const targetCodes = Array.isArray(codesArray) && codesArray.length ? codesArray : listingBackupModal.codes;
+    if (!targetCodes.length) return;
+    const text = targetCodes.join('\n');
+    navigator.clipboard.writeText(text);
+    setListingBackupModal((prev) => ({ ...prev, copied: true }));
+    setBannerCopied(true);
+    setTimeout(() => {
+      setListingBackupModal((prev) => ({ ...prev, copied: false }));
+      setBannerCopied(false);
+    }, 3000);
+  };
+
+  const downloadListingCodesFile = (codesArray) => {
+    const targetCodes = Array.isArray(codesArray) && codesArray.length ? codesArray : listingBackupModal.codes;
+    if (!targetCodes.length) return;
+    const textContent =
+      `PROPERTY BASE - LISTING MFA BACKUP CODES (SINGLE-USE CODES)\n` +
+      `Generated: ${new Date().toLocaleString()}\n` +
+      `Seller Account: ${user?.email || ''}\n\n` +
+      `IMPORTANT: Use these single-use backup codes to verify your identity whenever you want to View & Edit or Delete any property listing in your portfolio.\n` +
+      `Once all backup codes have been used up, a new set of codes will automatically be generated and displayed on your screen the next time you log in.\n\n` +
+      targetCodes.map((c, i) => `${i + 1}. ${c}`).join('\n');
+    const blob = new Blob([textContent], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `propertybase-listing-backup-codes.txt`;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // ── STEP-UP VERIFICATION MODAL HELPERS ─────────────────────────────────────
+  const requestStepUpVerification = ({
+    actionType,
+    actionTitle,
+    actionSubtitle,
+    targetLabel,
+    targetPropertyId = null,
+    onVerified,
+  }) => {
+    setStepUpModal({
+      isOpen: true,
+      actionType,
+      actionTitle,
+      actionSubtitle,
+      targetLabel: targetLabel || actionTitle,
+      targetPropertyId,
+      method: 'backup',
+      codeInput: '',
+      loading: false,
+      sendingEmail: false,
+      emailSentMessage: '',
+      error: '',
+      onVerified,
+    });
+  };
+
+  const handleCloseStepUpModal = () => {
+    setStepUpModal((prev) => ({
+      ...prev,
+      isOpen: false,
+      codeInput: '',
+      error: '',
+      emailSentMessage: '',
+      loading: false,
+      sendingEmail: false,
+    }));
+  };
+
+  // Automatically dispatches 6-digit code to the user's registered account email without asking them to type their email
+  const handleSendStepUpEmailCode = async () => {
+    if (!token) {
+      setStepUpModal((prev) => ({
+        ...prev,
+        error: 'Authentication token missing. Please sign in again.',
+      }));
+      return;
+    }
+
+    setStepUpModal((prev) => ({
+      ...prev,
+      sendingEmail: true,
+      error: '',
+      emailSentMessage: '',
+    }));
+
+    try {
+      const res = await fetch(`${API_BASE}/users/me/action-mfa/send-email-otp`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          action_type: stepUpModal.actionType,
+          target_label: stepUpModal.targetLabel,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to send verification code to registered email.');
+      }
+
+      setStepUpModal((prev) => ({
+        ...prev,
+        method: 'email_otp',
+        codeInput: '',
+        sendingEmail: false,
+        emailSentMessage: data.dev_code
+          ? `Verification code sent to ${user?.email} (Code: ${data.dev_code})`
+          : data.message || `A 6-digit verification code has been sent to ${user?.email}.`,
+      }));
+    } catch (err) {
+      setStepUpModal((prev) => ({
+        ...prev,
+        sendingEmail: false,
+        error: err.message,
+      }));
+    }
+  };
+
+  const handleVerifyStepUpAction = async (e) => {
+    e.preventDefault();
+    const cleanInput = stepUpModal.codeInput.trim().toUpperCase();
+    if (!cleanInput) {
+      setStepUpModal((prev) => ({
+        ...prev,
+        error:
+          prev.method === 'backup'
+            ? 'Please enter one of your single-use backup codes.'
+            : 'Please enter the 6-digit verification code sent to your email.',
+      }));
+      return;
+    }
+
+    setStepUpModal((prev) => ({ ...prev, loading: true, error: '' }));
+
+    try {
+      // CASE A: Verifying a Property Listing (View & Edit or Delete) via the user's Listing Backup Codes
+      if (stepUpModal.method === 'backup' && stepUpModal.targetPropertyId) {
+        const availableCodes = (listingMfa.codes || []).map((c) =>
+          String(c).trim().toUpperCase()
+        );
+
+        if (availableCodes.length === 0) {
+          throw new Error(
+            'All of your listing backup codes have been used up. Please log out and log back in to receive a newly generated set of backup codes on your screen, or verify via your registered email below.'
+          );
+        }
+
+        if (availableCodes.includes(cleanInput)) {
+          // Valid listing backup code! Consume this code
+          const remainingCodes = availableCodes.filter((c) => c !== cleanInput);
+
+          setListingMfa((prev) => ({
+            ...prev,
+            initialized: true,
+            codes: remainingCodes,
+            notificationVisible: remainingCodes.length > 0 ? prev.notificationVisible : false,
+          }));
+
+          const callback = stepUpModal.onVerified;
+          handleCloseStepUpModal();
+
+          if (callback) {
+            callback(remainingCodes);
+          }
+
+          if (remainingCodes.length === 0) {
+            showToast(
+              'success',
+              'Identity verified! You have now used all of your listing backup codes — a new set of backup codes will automatically be generated and displayed on your screen the next time you log in.'
+            );
+          } else {
+            showToast(
+              'success',
+              `Identity verified! (${remainingCodes.length} listing backup code(s) remaining to edit or delete any property listing).`
+            );
+          }
+          return;
+        }
+
+        // Code did not match the active listing backup codes -> Record ATO Risk Alert on backend!
+        if (token) {
+          const failRes = await fetch(`${API_BASE}/users/me/action-mfa/record-failure`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              Authorization: `Bearer ${token}`,
+            },
+            body: JSON.stringify({
+              action_type: stepUpModal.actionType,
+              method: 'listing_backup_code',
+              target_label: stepUpModal.targetLabel,
+            }),
+          });
+          const failData = await failRes.json();
+          throw new Error(
+            failData.detail ||
+              `Invalid or already used listing backup code.`
+          );
+        } else {
+          throw new Error(`Invalid or already used listing backup code.`);
+        }
+      }
+
+      // CASE B: Email OTP verification (for Listings or Profile) OR Account Backup Code (for Profile Settings)
+      const res = await fetch(`${API_BASE}/users/me/action-mfa/verify`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          method: stepUpModal.method,
+          code: cleanInput,
+          action_type: stepUpModal.actionType,
+          target_label: stepUpModal.targetLabel,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Identity verification failed.');
+      }
+
+      if (typeof data.backup_codes_remaining === 'number') {
+        setBackupCodesRemaining(data.backup_codes_remaining);
+      }
+
+      if (data.new_backup_codes && data.new_backup_codes.length > 0 && onShowBackupCodes) {
+        onShowBackupCodes(data.new_backup_codes);
+      }
+
+      const callback = stepUpModal.onVerified;
+      handleCloseStepUpModal();
+
+      showToast('success', data.message || 'Identity verified successfully!');
+      if (callback) {
+        callback();
+      }
+    } catch (err) {
+      setStepUpModal((prev) => ({
+        ...prev,
+        loading: false,
+        error: err.message,
+      }));
+    }
+  };
+
+  const handleGenerateFreshBackupCodes = async () => {
+    if (!token) return;
+    setGeneratingCodes(true);
+    try {
+      const res = await fetch(`${API_BASE}/users/me/generate-backup-codes`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Could not generate backup codes.');
+      }
+      setBackupCodesRemaining(8);
+      if (data.backup_codes && onShowBackupCodes) {
+        onShowBackupCodes(data.backup_codes);
+      }
+      showToast('success', 'Generated 8 fresh single-use backup codes!');
+    } catch (err) {
+      showToast('error', err.message);
+    } finally {
+      setGeneratingCodes(false);
+    }
   };
 
   // ── PHOTO UPLOAD HANDLERS (LOCAL IMAGE FILES) ──────────────────────────────
@@ -317,18 +762,27 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
     const first = newOffers[0];
     showToast(
       'success',
-      `✨ New buyer offer of ${formatCurrency(first.offer_amount)} received from ${first.client_name} for "${targetProperty.title}"!`
+      `New buyer offer of ${formatCurrency(first.offer_amount)} received from ${first.client_name} for "${targetProperty.title}"!`
     );
   };
 
-  // ── HANDLERS: LISTINGS ────────────────────────────────────────────────────
+  // ── HANDLERS: LISTINGS (PROTECTED BY LISTING MFA BACKUP CODES) ────────────
   const handleViewProperty = (property) => {
-    setSelectedProperty(property);
-    setEditFormData({
-      ...property,
-      images: property.images || (property.image_url ? [property.image_url] : []),
+    requestStepUpVerification({
+      actionType: 'EDIT_LISTING',
+      actionTitle: 'Verify Identity to View & Edit Listing',
+      actionSubtitle: `Enter one of your single-use listing backup codes (or verify via your registered email) to view and edit "${property.title}".`,
+      targetLabel: property.title,
+      targetPropertyId: property.id,
+      onVerified: () => {
+        setSelectedProperty(property);
+        setEditFormData({
+          ...property,
+          images: property.images || (property.image_url ? [property.image_url] : []),
+        });
+        window.scrollTo({ top: 0, behavior: 'smooth' });
+      },
     });
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleSavePropertyChanges = (e) => {
@@ -360,13 +814,77 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
   };
 
   const handleDeleteProperty = (id) => {
-    if (!window.confirm('Are you sure you want to remove this property listing?')) return;
-    setListings((prev) => prev.filter((p) => p.id !== id));
-    // Also remove associated offers
-    setOffers((prev) => prev.filter((o) => o.property_id !== id));
-    setSelectedProperty(null);
-    setEditFormData(null);
-    showToast('success', 'Property listing and associated offers removed.');
+    const targetListing = listings.find((p) => p.id === id);
+    const titleLabel = targetListing ? targetListing.title : `Listing #${id}`;
+
+    requestStepUpVerification({
+      actionType: 'DELETE_LISTING',
+      actionTitle: 'Verify Identity to Delete Property Listing',
+      actionSubtitle: `Deleting "${titleLabel}" is a permanent action. Enter one of your single-use listing backup codes (or verify via your registered email).`,
+      targetLabel: titleLabel,
+      targetPropertyId: id,
+      onVerified: () => {
+        setListings((prev) => prev.filter((p) => p.id !== id));
+        setOffers((prev) => prev.filter((o) => o.property_id !== id));
+        setSelectedProperty(null);
+        setEditFormData(null);
+        showToast('success', `Property listing "${titleLabel}" and associated offers removed.`);
+      },
+    });
+  };
+
+  // ── HANDLER: MY PROFILE EDIT & SAVE (PROTECTED BY STEP-UP VERIFICATION) ────
+  const handleUnlockProfileEditing = () => {
+    requestStepUpVerification({
+      actionType: 'UPDATE_PROFILE',
+      actionTitle: 'Verify Identity to Edit Personal Profile',
+      actionSubtitle:
+        'To protect your account against unauthorized takeover, please verify your identity before modifying your personal profile details.',
+      targetLabel: `Profile (${user?.email})`,
+      targetPropertyId: null,
+      onVerified: () => {
+        setIsProfileUnlocked(true);
+      },
+    });
+  };
+
+  const handleSaveProfileChanges = async (e) => {
+    e.preventDefault();
+    if (!isProfileUnlocked) {
+      handleUnlockProfileEditing();
+      return;
+    }
+
+    setProfileSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/users/me/profile`, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({
+          first_name: profileForm.first_name.trim(),
+          last_name: profileForm.last_name.trim(),
+          username: profileForm.username.trim(),
+          mobile_number: profileForm.mobile_number.trim(),
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to update profile details.');
+      }
+
+      if (data.user && onUserUpdate) {
+        onUserUpdate({ ...user, ...data.user });
+      }
+      setIsProfileUnlocked(false);
+      showToast('success', data.message || 'Personal profile details updated and re-locked!');
+    } catch (err) {
+      showToast('error', err.message);
+    } finally {
+      setProfileSaving(false);
+    }
   };
 
   const handleCreateProperty = (e) => {
@@ -382,6 +900,10 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
     }
 
     const primaryImage = newProperty.images[0];
+    const isFirstListingSetup = !listingMfa.initialized || listings.length === 0;
+    const activeCodes = isFirstListingSetup
+      ? generateListingBackupCodes(3)
+      : listingMfa.codes;
 
     const createdItem = {
       id: `prop-${Date.now().toString().slice(-4)}`,
@@ -401,9 +923,12 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
       created_at: 'Just now',
     };
 
-    // 1. Add new listing to portfolio
+    // 1. Add new listing to portfolio and return to the Listings page
     setListings((prev) => [createdItem, ...prev]);
     setIsAddModalOpen(false);
+    setActiveNav('listings');
+    setSelectedProperty(null);
+    setEditFormData(null);
     setNewProperty({
       title: '',
       location: '',
@@ -416,9 +941,37 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
       images: [],
       description: '',
     });
-    showToast('success', `Listing "${createdItem.title}" published with ${createdItem.images.length} photo(s)! Attracting buyer proposals...`);
 
-    // 2. Automatically generate synthetic buyer offers for this newly created listing!
+    // 2. When the user posts their first listing and saves, issue random backup codes
+    // and display the notification on the Listings page so they can use them to edit/delete any property listing!
+    if (isFirstListingSetup) {
+      setListingMfa({
+        initialized: true,
+        codes: activeCodes,
+        notificationVisible: true,
+        notificationReason: 'FIRST_LISTING',
+        lastSeenToken: token || 'active',
+      });
+      setListingBackupModal({
+        isOpen: true,
+        propertyId: createdItem.id,
+        propertyTitle: createdItem.title,
+        codes: activeCodes,
+        isRefill: false,
+        copied: false,
+      });
+      showToast(
+        'success',
+        `First listing "${createdItem.title}" saved! Your random backup codes for editing or deleting any property listing are now displayed on the Listings page.`
+      );
+    } else {
+      showToast(
+        'success',
+        `Listing "${createdItem.title}" published successfully!`
+      );
+    }
+
+    // 3. Automatically generate synthetic buyer offers for this newly created listing!
     setTimeout(() => {
       generateSyntheticOffers(createdItem, 1);
     }, 1500);
@@ -534,37 +1087,11 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
           </button>
 
           <button
-            onClick={() => {
-              setActiveNav('offers');
-              setSelectedProperty(null);
-            }}
-            style={activeNav === 'offers' ? styles.navItemActive : styles.navItem}
-          >
-            <DollarSign size={20} />
-            {isSidebarOpen && (
-              <div style={styles.navLabelBadgeRow}>
-                <span>Offers & Leads</span>
-                {pendingOffersCount > 0 && (
-                  <span style={styles.alertCountBadge}>{pendingOffersCount}</span>
-                )}
-              </div>
-            )}
-          </button>
-
-          <button
             onClick={() => setActiveNav('messages')}
             style={activeNav === 'messages' ? styles.navItemActive : styles.navItem}
           >
             <MessageSquare size={20} />
             {isSidebarOpen && <span>Messages</span>}
-          </button>
-
-          <button
-            onClick={() => setActiveNav('analytics')}
-            style={activeNav === 'analytics' ? styles.navItemActive : styles.navItem}
-          >
-            <TrendingUp size={20} />
-            {isSidebarOpen && <span>Market Analytics</span>}
           </button>
 
           <button
@@ -1050,13 +1577,247 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
               </div>
             </div>
 
+            {activeNav !== 'settings' ? (
+              <>
             {/* ── SECTION 1: "MY LISTINGS" ── */}
             <section style={styles.sectionBlock}>
+              {/* ── LISTING MFA BACKUP CODES NOTIFICATION BANNER ── */}
+              {listingMfa.initialized && listingMfa.notificationVisible && listingMfa.codes.length > 0 && (
+                <div
+                  style={{
+                    background: 'linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%)',
+                    border: '2px solid #6366F1',
+                    borderRadius: '16px',
+                    padding: '22px 24px',
+                    marginBottom: '24px',
+                    boxShadow: '0 10px 25px rgba(79, 70, 229, 0.12)',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'flex-start',
+                      flexWrap: 'wrap',
+                      gap: '14px',
+                      marginBottom: '16px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'flex-start', gap: '12px' }}>
+                      <div
+                        style={{
+                          width: '44px',
+                          height: '44px',
+                          borderRadius: '12px',
+                          backgroundColor: '#4F46E5',
+                          color: '#FFFFFF',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                          flexShrink: 0,
+                        }}
+                      >
+                        <KeyRound size={22} />
+                      </div>
+                      <div>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+                          <h4 style={{ margin: 0, fontSize: '17px', fontWeight: '800', color: '#1E1B4B' }}>
+                            {listingMfa.notificationReason === 'REGENERATED_ON_LOGIN'
+                              ? 'New Listing MFA Backup Codes Generated on Sign-In'
+                              : 'Listing MFA Backup Codes Issued'}
+                          </h4>
+                          <span
+                            style={{
+                              backgroundColor: '#4F46E5',
+                              color: '#FFFFFF',
+                              fontSize: '11px',
+                              fontWeight: '700',
+                              padding: '3px 9px',
+                              borderRadius: '999px',
+                            }}
+                          >
+                            {listingMfa.codes.length} Unused Code(s)
+                          </span>
+                        </div>
+                        <p style={{ margin: '5px 0 0', fontSize: '13.5px', color: '#3730A3', lineHeight: 1.5 }}>
+                          {listingMfa.notificationReason === 'REGENERATED_ON_LOGIN'
+                            ? 'All of your previous listing backup codes were used up. Here is your new set of random single-use backup codes to edit or delete any property listing:'
+                            : 'Save these random single-use backup codes now! You will use them to verify your identity whenever you click View & Edit or Delete on any property listing:'}
+                        </p>
+                      </div>
+                    </div>
+
+                    <div style={{ display: 'flex', gap: '8px', alignItems: 'center', flexWrap: 'wrap' }}>
+                      <button
+                        type="button"
+                        onClick={() => copyListingCodesToClipboard(listingMfa.codes)}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '9px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid #6366F1',
+                          backgroundColor: bannerCopied ? '#DCFCE7' : '#FFFFFF',
+                          color: bannerCopied ? '#166534' : '#312E81',
+                          fontSize: '12.5px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        {bannerCopied ? <Check size={14} /> : <Copy size={14} />}
+                        <span>{bannerCopied ? 'Copied!' : 'Copy Codes'}</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => downloadListingCodesFile(listingMfa.codes)}
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '9px 14px',
+                          borderRadius: '8px',
+                          border: '1px solid #6366F1',
+                          backgroundColor: '#FFFFFF',
+                          color: '#312E81',
+                          fontSize: '12.5px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <Download size={14} />
+                        <span>Download .txt</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setListingMfa((prev) => ({
+                            ...prev,
+                            notificationVisible: false,
+                          }))
+                        }
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                          padding: '9px 12px',
+                          borderRadius: '8px',
+                          border: 'none',
+                          backgroundColor: '#312E81',
+                          color: '#FFFFFF',
+                          fontSize: '12px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <CheckCircle size={14} />
+                        <span>I've Saved These Codes</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Random Backup Codes Row */}
+                  <div
+                    style={{
+                      display: 'grid',
+                      gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))',
+                      gap: '10px',
+                    }}
+                  >
+                    {listingMfa.codes.map((code, idx) => (
+                      <div
+                        key={idx}
+                        style={{
+                          backgroundColor: '#FFFFFF',
+                          border: '1px solid #C7D2FE',
+                          borderRadius: '10px',
+                          padding: '12px 16px',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'space-between',
+                          boxShadow: '0 2px 6px rgba(79, 70, 229, 0.06)',
+                        }}
+                      >
+                        <span style={{ fontSize: '11px', fontWeight: '700', color: '#6366F1' }}>
+                          CODE #{idx + 1}
+                        </span>
+                        <span
+                          style={{
+                            fontFamily: 'monospace',
+                            fontSize: '16px',
+                            fontWeight: '900',
+                            color: '#1E1B4B',
+                            letterSpacing: '1.5px',
+                          }}
+                        >
+                          {code}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Depleted Backup Codes Notice Banner */}
+              {listingMfa.initialized && listingMfa.codes.length === 0 && (
+                <div
+                  style={{
+                    backgroundColor: '#FEF3C7',
+                    border: '1px solid #F59E0B',
+                    borderRadius: '12px',
+                    padding: '14px 18px',
+                    marginBottom: '20px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                    flexWrap: 'wrap',
+                    gap: '10px',
+                  }}
+                >
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '10px', color: '#92400E', fontSize: '13px', fontWeight: '600' }}>
+                    <AlertCircle size={18} color="#D97706" />
+                    <span>
+                      All of your listing backup codes have been used up! A new set of backup codes will automatically be generated and displayed on your screen once you log back in to the web application.
+                    </span>
+                  </div>
+                </div>
+              )}
+
               <div style={styles.sectionHeader}>
                 <div>
                   <div style={styles.titleBadgeRow}>
                     <h3 style={styles.sectionTitle}>My Listings</h3>
                     <span style={styles.sectionCountPill}>{filteredListings.length}</span>
+                    {listingMfa.initialized && listingMfa.codes.length > 0 && !listingMfa.notificationVisible && (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setListingMfa((prev) => ({
+                            ...prev,
+                            notificationVisible: true,
+                          }))
+                        }
+                        style={{
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '5px',
+                          marginLeft: '8px',
+                          padding: '4px 10px',
+                          borderRadius: '999px',
+                          border: '1px solid #C7D2FE',
+                          backgroundColor: '#EEF2FF',
+                          color: '#4F46E5',
+                          fontSize: '11.5px',
+                          fontWeight: '700',
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <KeyRound size={12} />
+                        <span>View Listing Backup Codes ({listingMfa.codes.length} Left)</span>
+                      </button>
+                    )}
                   </div>
                   <p style={styles.sectionSub}>
                     Manage your portfolio, edit property details, and monitor engagement
@@ -1181,6 +1942,26 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                         <div style={styles.cardPriceRow}>
                           <span style={styles.cardPrice}>
                             {formatCurrency(prop.price)}
+                          </span>
+                          <span
+                            style={{
+                              display: 'inline-flex',
+                              alignItems: 'center',
+                              gap: '4px',
+                              padding: '3px 8px',
+                              backgroundColor: listingMfa.codes.length > 0 ? '#EEF2FF' : '#FEF3C7',
+                              color: listingMfa.codes.length > 0 ? '#4F46E5' : '#B45309',
+                              border: listingMfa.codes.length > 0 ? '1px solid #C7D2FE' : '1px solid #FDE68A',
+                              borderRadius: '6px',
+                              fontSize: '11px',
+                              fontWeight: '700',
+                            }}
+                            title="Single-use backup codes available for editing or deleting any property listing"
+                          >
+                            <KeyRound size={11} />
+                            <span>
+                              {listingMfa.codes.length}/3 Listing Codes
+                            </span>
                           </span>
                         </div>
 
@@ -1448,6 +2229,334 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                 </div>
               )}
             </section>
+              </>
+            ) : null}
+
+            {/* ── SECTION 3: "SETTINGS & MY PROFILE" (WITH STEP-UP VERIFICATION) ── */}
+            {activeNav === 'settings' && (
+              <section style={styles.sectionBlock}>
+                <div style={styles.sectionHeader}>
+                  <div>
+                    <div style={styles.titleBadgeRow}>
+                      <h3 style={styles.sectionTitle}>My Profile & Account Security Settings</h3>
+                      <span
+                        style={{
+                          ...styles.sectionCountPill,
+                          backgroundColor: isProfileUnlocked ? '#ECFDF5' : '#FEF2F2',
+                          color: isProfileUnlocked ? '#059669' : '#DC2626',
+                        }}
+                      >
+                        {isProfileUnlocked ? 'Identity Verified (Unlocked)' : 'Protected by Step-Up Verification'}
+                      </span>
+                    </div>
+                    <p style={styles.sectionSub}>
+                      Personal seller details and single-use backup codes are protected against unauthorized Account Takeover (ATO)
+                    </p>
+                  </div>
+
+                  {!isProfileUnlocked ? (
+                    <button
+                      type="button"
+                      onClick={handleUnlockProfileEditing}
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '10px 18px',
+                        backgroundColor: '#4F46E5',
+                        color: '#FFFFFF',
+                        border: 'none',
+                        borderRadius: '8px',
+                        fontSize: '13px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                        boxShadow: '0 4px 12px rgba(79, 70, 229, 0.25)',
+                      }}
+                    >
+                      <Lock size={16} />
+                      <span>Edit Profile</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIsProfileUnlocked(false);
+                        setProfileForm({
+                          first_name: user?.first_name || '',
+                          last_name: user?.last_name || '',
+                          username: user?.username || '',
+                          mobile_number: user?.mobile_number || '',
+                          email: user?.email || '',
+                        });
+                      }}
+                      style={styles.cancelBtn}
+                    >
+                      Lock Profile Editing
+                    </button>
+                  )}
+                </div>
+
+                {/* Personal Details Form Card */}
+                <form
+                  onSubmit={handleSaveProfileChanges}
+                  style={{
+                    ...styles.detailCard,
+                    border: isProfileUnlocked ? '2px solid #4F46E5' : '1px solid #E2E8F0',
+                  }}
+                >
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      paddingBottom: '18px',
+                      marginBottom: '22px',
+                      borderBottom: '1px solid #E2E8F0',
+                      flexWrap: 'wrap',
+                      gap: '12px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <div
+                        style={{
+                          width: '48px',
+                          height: '48px',
+                          borderRadius: '12px',
+                          backgroundColor: '#EEF2FF',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <User size={24} color="#4F46E5" />
+                      </div>
+                      <div>
+                        <h4 style={{ margin: 0, fontSize: '17px', fontWeight: '800', color: '#0F172A' }}>
+                          My Profile — Personal Details
+                        </h4>
+                        <p style={{ margin: '3px 0 0', fontSize: '12px', color: '#64748B' }}>
+                          {isProfileUnlocked
+                            ? 'Identity verified! You can now update your personal details below and click Save.'
+                            : 'Fields are read-only until you verify your identity using a backup code or email OTP.'}
+                        </p>
+                      </div>
+                    </div>
+
+                    {!isProfileUnlocked && (
+                      <div
+                        style={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          backgroundColor: '#FFFBEB',
+                          color: '#B45309',
+                          border: '1px solid #FDE68A',
+                          padding: '6px 12px',
+                          borderRadius: '8px',
+                          fontSize: '12px',
+                          fontWeight: '600',
+                        }}
+                      >
+                        <ShieldCheck size={15} />
+                        <span>Anti-ATO Step-Up Protection Active</span>
+                      </div>
+                    )}
+                  </div>
+
+                  <div style={styles.formGrid}>
+                    <div style={styles.formCol}>
+                      <label style={styles.fieldLabel}>First Name</label>
+                      <input
+                        type="text"
+                        required
+                        disabled={!isProfileUnlocked}
+                        value={profileForm.first_name}
+                        onChange={(e) =>
+                          setProfileForm({ ...profileForm, first_name: e.target.value })
+                        }
+                        style={{
+                          ...styles.inputField,
+                          backgroundColor: isProfileUnlocked ? '#FFFFFF' : '#F1F5F9',
+                          cursor: isProfileUnlocked ? 'text' : 'not-allowed',
+                        }}
+                      />
+                    </div>
+
+                    <div style={styles.formCol}>
+                      <label style={styles.fieldLabel}>Last Name</label>
+                      <input
+                        type="text"
+                        required
+                        disabled={!isProfileUnlocked}
+                        value={profileForm.last_name}
+                        onChange={(e) =>
+                          setProfileForm({ ...profileForm, last_name: e.target.value })
+                        }
+                        style={{
+                          ...styles.inputField,
+                          backgroundColor: isProfileUnlocked ? '#FFFFFF' : '#F1F5F9',
+                          cursor: isProfileUnlocked ? 'text' : 'not-allowed',
+                        }}
+                      />
+                    </div>
+
+                    <div style={styles.formCol}>
+                      <label style={styles.fieldLabel}>Username</label>
+                      <input
+                        type="text"
+                        required
+                        disabled={!isProfileUnlocked}
+                        value={profileForm.username}
+                        onChange={(e) =>
+                          setProfileForm({ ...profileForm, username: e.target.value })
+                        }
+                        style={{
+                          ...styles.inputField,
+                          backgroundColor: isProfileUnlocked ? '#FFFFFF' : '#F1F5F9',
+                          cursor: isProfileUnlocked ? 'text' : 'not-allowed',
+                        }}
+                      />
+                    </div>
+
+                    <div style={styles.formCol}>
+                      <label style={styles.fieldLabel}>Mobile Phone Number</label>
+                      <input
+                        type="text"
+                        required
+                        disabled={!isProfileUnlocked}
+                        value={profileForm.mobile_number}
+                        onChange={(e) =>
+                          setProfileForm({ ...profileForm, mobile_number: e.target.value })
+                        }
+                        style={{
+                          ...styles.inputField,
+                          backgroundColor: isProfileUnlocked ? '#FFFFFF' : '#F1F5F9',
+                          cursor: isProfileUnlocked ? 'text' : 'not-allowed',
+                        }}
+                      />
+                    </div>
+
+                    <div style={{ ...styles.formCol, gridColumn: 'span 2' }}>
+                      <label style={styles.fieldLabel}>
+                        Registered Account Email (Used for Security Verification)
+                      </label>
+                      <input
+                        type="email"
+                        disabled
+                        value={profileForm.email}
+                        style={{
+                          ...styles.inputField,
+                          backgroundColor: '#F1F5F9',
+                          color: '#64748B',
+                          cursor: 'not-allowed',
+                        }}
+                      />
+                    </div>
+                  </div>
+
+                  <div style={styles.saveActionBar}>
+                    {!isProfileUnlocked ? (
+                      <button
+                        type="button"
+                        onClick={handleUnlockProfileEditing}
+                        style={styles.saveChangesBtn}
+                      >
+                        <KeyRound size={17} />
+                        <span>Edit Details</span>
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => setIsProfileUnlocked(false)}
+                          style={styles.cancelBtn}
+                        >
+                          Cancel
+                        </button>
+                        <button
+                          type="submit"
+                          disabled={profileSaving}
+                          style={styles.saveChangesBtn}
+                        >
+                          <Save size={17} />
+                          <span>{profileSaving ? 'Saving Profile...' : 'Save Personal Details'}</span>
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </form>
+
+                {/* Seller Backup Codes Management Card */}
+                <div style={styles.detailCard}>
+                  <div
+                    style={{
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'space-between',
+                      flexWrap: 'wrap',
+                      gap: '16px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                      <div
+                        style={{
+                          width: '48px',
+                          height: '48px',
+                          borderRadius: '12px',
+                          backgroundColor: '#ECFDF5',
+                          display: 'flex',
+                          alignItems: 'center',
+                          justifyContent: 'center',
+                        }}
+                      >
+                        <KeyRound size={24} color="#059669" />
+                      </div>
+                      <div>
+                        <h4 style={{ margin: 0, fontSize: '17px', fontWeight: '800', color: '#0F172A' }}>
+                          Seller Backup Verification Codes ({backupCodesRemaining} Unused Remaining)
+                        </h4>
+                        <p style={{ margin: '4px 0 0', fontSize: '13px', color: '#64748B', maxWidth: '640px' }}>
+                          Your single-use backup codes are used to verify your identity when you click{' '}
+                          <strong>View & Edit</strong> or <strong>Delete</strong> on any property listing, or when modifying your{' '}
+                          <strong>My Profile</strong> details. Failed verification attempts automatically trigger Account Takeover (ATO) detection.
+                        </p>
+                      </div>
+                    </div>
+
+                    <button
+                      type="button"
+                      disabled={generatingCodes}
+                      onClick={() =>
+                        requestStepUpVerification({
+                          actionType: 'UPDATE_PROFILE',
+                          actionTitle: 'Verify Identity to Generate New Backup Codes',
+                          actionSubtitle:
+                            'Verify your identity with an existing backup code or via your registered email to issue 8 fresh backup codes.',
+                          targetLabel: 'Regenerate 8 Seller Backup Codes',
+                          onVerified: handleGenerateFreshBackupCodes,
+                        })
+                      }
+                      style={{
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '8px',
+                        padding: '10px 16px',
+                        backgroundColor: '#0F172A',
+                        color: '#FFFFFF',
+                        border: 'none',
+                        borderRadius: '8px',
+                        fontSize: '13px',
+                        fontWeight: '700',
+                        cursor: 'pointer',
+                      }}
+                    >
+                      <RefreshCw size={15} />
+                      <span>{generatingCodes ? 'Generating...' : 'Generate 8 Fresh Backup Codes'}</span>
+                    </button>
+                  </div>
+                </div>
+              </section>
+            )}
           </div>
         )}
       </div>
@@ -1954,6 +3063,579 @@ export default function SellerDashboard({ user, onLogout, onSwitchToAdmin }) {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* ──────────────── 6. STEP-UP IDENTITY VERIFICATION MODAL (ANTI-ATO) ──────────────── */}
+      {stepUpModal.isOpen && (
+        <div style={styles.modalOverlay}>
+          <div style={{ ...styles.modalCard, width: '500px' }}>
+            <div style={styles.modalHeader}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                <div
+                  style={{
+                    ...styles.modalIconBox,
+                    backgroundColor:
+                      stepUpModal.actionType === 'DELETE_LISTING' ? '#FEF2F2' : '#EEF2FF',
+                  }}
+                >
+                  <ShieldCheck
+                    size={22}
+                    color={stepUpModal.actionType === 'DELETE_LISTING' ? '#DC2626' : '#4F46E5'}
+                  />
+                </div>
+                <div>
+                  <h3 style={styles.modalTitle}>{stepUpModal.actionTitle}</h3>
+                  <p style={styles.modalSub}>
+                    Anti-Account Takeover (ATO) Step-Up Security Verification
+                  </p>
+                </div>
+              </div>
+              <button onClick={handleCloseStepUpModal} style={styles.modalCloseBtn}>
+                <X size={18} />
+              </button>
+            </div>
+
+            <form onSubmit={handleVerifyStepUpAction} style={{ padding: '24px' }}>
+              <p
+                style={{
+                  margin: '0 0 16px',
+                  fontSize: '13px',
+                  color: '#475569',
+                  lineHeight: 1.55,
+                }}
+              >
+                {stepUpModal.actionSubtitle}
+              </p>
+
+              {/* Verification Method Toggle Tabs */}
+              <div
+                style={{
+                  display: 'grid',
+                  gridTemplateColumns: '1fr 1fr',
+                  gap: '8px',
+                  backgroundColor: '#F1F5F9',
+                  padding: '4px',
+                  borderRadius: '10px',
+                  marginBottom: '18px',
+                }}
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    setStepUpModal((prev) => ({
+                      ...prev,
+                      method: 'backup',
+                      codeInput: '',
+                      error: '',
+                    }))
+                  }
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '9px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    backgroundColor:
+                      stepUpModal.method === 'backup' ? '#FFFFFF' : 'transparent',
+                    color: stepUpModal.method === 'backup' ? '#4F46E5' : '#64748B',
+                    boxShadow:
+                      stepUpModal.method === 'backup'
+                        ? '0 1px 3px rgba(0,0,0,0.08)'
+                        : 'none',
+                  }}
+                >
+                  <KeyRound size={14} />
+                  <span>
+                    {stepUpModal.targetPropertyId
+                      ? `Listing Backup Code (${listingMfa.codes.length}/3)`
+                      : `Backup Code (${backupCodesRemaining})`}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  disabled={stepUpModal.sendingEmail}
+                  onClick={() => {
+                    if (stepUpModal.method !== 'email_otp' || !stepUpModal.emailSentMessage) {
+                      handleSendStepUpEmailCode();
+                    }
+                  }}
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    gap: '6px',
+                    padding: '9px 12px',
+                    borderRadius: '8px',
+                    border: 'none',
+                    fontSize: '12px',
+                    fontWeight: '700',
+                    cursor: 'pointer',
+                    backgroundColor:
+                      stepUpModal.method === 'email_otp' ? '#FFFFFF' : 'transparent',
+                    color: stepUpModal.method === 'email_otp' ? '#4F46E5' : '#64748B',
+                    boxShadow:
+                      stepUpModal.method === 'email_otp'
+                        ? '0 1px 3px rgba(0,0,0,0.08)'
+                        : 'none',
+                  }}
+                >
+                  <Mail size={14} />
+                  <span>
+                    {stepUpModal.sendingEmail ? 'Sending Email...' : 'Verify via Email'}
+                  </span>
+                </button>
+              </div>
+
+              {/* Error Alert */}
+              {stepUpModal.error && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '8px',
+                    padding: '12px 14px',
+                    backgroundColor: '#FEF2F2',
+                    color: '#B91C1C',
+                    border: '1px solid #FCA5A5',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    marginBottom: '16px',
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <AlertCircle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>{stepUpModal.error}</span>
+                </div>
+              )}
+
+              {/* Email Sent Banner */}
+              {stepUpModal.method === 'email_otp' && stepUpModal.emailSentMessage && (
+                <div
+                  style={{
+                    display: 'flex',
+                    alignItems: 'flex-start',
+                    gap: '8px',
+                    padding: '12px 14px',
+                    backgroundColor: '#ECFDF5',
+                    color: '#047857',
+                    border: '1px solid #A7F3D0',
+                    borderRadius: '8px',
+                    fontSize: '12px',
+                    fontWeight: '600',
+                    marginBottom: '16px',
+                    lineHeight: 1.45,
+                  }}
+                >
+                  <CheckCircle size={16} style={{ flexShrink: 0, marginTop: 1 }} />
+                  <span>{stepUpModal.emailSentMessage}</span>
+                </div>
+              )}
+
+              {stepUpModal.method === 'backup' ? (
+                <div style={{ marginBottom: '16px' }}>
+                  <label style={styles.fieldLabel}>
+                    {stepUpModal.targetPropertyId
+                      ? `Enter Single-Use Listing Backup Code (${listingMfa.codes.length} remaining for editing/deleting any listing)`
+                      : 'Enter Single-Use Seller Backup Code'}
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    placeholder="e.g. A8K2-9P1Z"
+                    value={stepUpModal.codeInput}
+                    onChange={(e) =>
+                      setStepUpModal((prev) => ({
+                        ...prev,
+                        codeInput: e.target.value.toUpperCase(),
+                      }))
+                    }
+                    style={{
+                      ...styles.inputField,
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      marginTop: '6px',
+                      fontSize: '15px',
+                      fontWeight: '700',
+                      letterSpacing: '1.5px',
+                      textAlign: 'center',
+                    }}
+                  />
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginTop: '10px',
+                      fontSize: '12px',
+                      color: '#64748B',
+                    }}
+                  >
+                    <span>Cannot verify with a backup code?</span>
+                    <button
+                      type="button"
+                      disabled={stepUpModal.sendingEmail}
+                      onClick={handleSendStepUpEmailCode}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#4F46E5',
+                        fontWeight: '700',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                        padding: 0,
+                        textDecoration: 'underline',
+                      }}
+                    >
+                      {stepUpModal.sendingEmail
+                        ? 'Sending code to your email...'
+                        : `Send code to ${user?.email}`}
+                    </button>
+                  </div>
+                </div>
+              ) : (
+                <div style={{ marginBottom: '16px' }}>
+                  <div
+                    style={{
+                      backgroundColor: '#F8FAFC',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '8px',
+                      padding: '10px 12px',
+                      marginBottom: '12px',
+                      fontSize: '12px',
+                      color: '#334155',
+                    }}
+                  >
+                    Code automatically dispatched to your registered email:{' '}
+                    <strong>{user?.email}</strong>
+                  </div>
+
+                  <label style={styles.fieldLabel}>
+                    Enter 6-Digit Email Verification Code
+                  </label>
+                  <input
+                    type="text"
+                    required
+                    autoFocus
+                    maxLength={6}
+                    placeholder="6-digit code"
+                    value={stepUpModal.codeInput}
+                    onChange={(e) =>
+                      setStepUpModal((prev) => ({
+                        ...prev,
+                        codeInput: e.target.value.replace(/\D/g, '').slice(0, 6),
+                      }))
+                    }
+                    style={{
+                      ...styles.inputField,
+                      width: '100%',
+                      boxSizing: 'border-box',
+                      marginTop: '6px',
+                      fontSize: '16px',
+                      fontWeight: '800',
+                      letterSpacing: '4px',
+                      textAlign: 'center',
+                    }}
+                  />
+                  <div
+                    style={{
+                      display: 'flex',
+                      justifyContent: 'space-between',
+                      alignItems: 'center',
+                      marginTop: '10px',
+                      fontSize: '12px',
+                      color: '#64748B',
+                    }}
+                  >
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setStepUpModal((prev) => ({
+                          ...prev,
+                          method: 'backup',
+                          codeInput: '',
+                          error: '',
+                        }))
+                      }
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#475569',
+                        fontWeight: '600',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      Use Backup Code instead
+                    </button>
+
+                    <button
+                      type="button"
+                      disabled={stepUpModal.sendingEmail}
+                      onClick={handleSendStepUpEmailCode}
+                      style={{
+                        background: 'none',
+                        border: 'none',
+                        color: '#4F46E5',
+                        fontWeight: '700',
+                        fontSize: '12px',
+                        cursor: 'pointer',
+                        padding: 0,
+                      }}
+                    >
+                      {stepUpModal.sendingEmail ? 'Resending...' : 'Resend Email Code'}
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              <div style={styles.modalFooter}>
+                <button
+                  type="button"
+                  onClick={handleCloseStepUpModal}
+                  style={styles.cancelBtn}
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={stepUpModal.loading}
+                  style={{
+                    ...styles.primaryAddBtn,
+                    backgroundColor:
+                      stepUpModal.actionType === 'DELETE_LISTING' ? '#DC2626' : '#4F46E5',
+                  }}
+                >
+                  <ShieldCheck size={16} />
+                  <span>
+                    {stepUpModal.loading ? 'Verifying...' : 'Verify & Proceed'}
+                  </span>
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* ──────────────── 7. LISTING BACKUP CODES POPUP MODAL ──────────────── */}
+      {listingBackupModal.isOpen && (
+        <div
+          style={{
+            position: 'fixed',
+            top: 0,
+            left: 0,
+            right: 0,
+            bottom: 0,
+            backgroundColor: 'rgba(15, 23, 42, 0.75)',
+            backdropFilter: 'blur(6px)',
+            zIndex: 9999,
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            padding: '20px',
+          }}
+        >
+          <div
+            style={{
+              backgroundColor: '#FFFFFF',
+              borderRadius: '16px',
+              width: '100%',
+              maxWidth: '500px',
+              padding: '32px',
+              boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.35)',
+              border: '1px solid #E2E8F0',
+              textAlign: 'center',
+            }}
+          >
+            <div
+              style={{
+                width: '56px',
+                height: '56px',
+                borderRadius: '50%',
+                backgroundColor: '#EEF2FF',
+                color: '#4F46E5',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                margin: '0 auto 16px auto',
+              }}
+            >
+              <KeyRound size={28} />
+            </div>
+
+            <h2
+              style={{
+                margin: '0 0 8px 0',
+                fontSize: '21px',
+                fontWeight: '800',
+                color: '#0F172A',
+              }}
+            >
+              {listingBackupModal.isRefill
+                ? 'New Listing Backup Codes Generated!'
+                : 'Save Your Listing Backup Codes'}
+            </h2>
+
+            <p
+              style={{
+                margin: '0 0 18px 0',
+                fontSize: '13.5px',
+                color: '#475569',
+                lineHeight: '1.55',
+              }}
+            >
+              {listingBackupModal.isRefill ? (
+                <>
+                  Welcome back! Since all of your previous listing backup codes were used up, the
+                  system has generated a <strong>new set of 3 random backup codes</strong>. Save
+                  them now to verify your identity whenever you edit or delete any property listing.
+                </>
+              ) : (
+                <>
+                  Your first property listing{' '}
+                  <strong style={{ color: '#0F172A' }}>
+                    "{listingBackupModal.propertyTitle}"
+                  </strong>{' '}
+                  has been saved! Store these <strong>3 random single-use backup codes</strong> in a
+                  safe place — you will use them whenever you click <strong>View & Edit</strong> or{' '}
+                  <strong>Delete</strong> on any property listing.
+                </>
+              )}
+            </p>
+
+            {/* 3 Listing Backup Codes Grid */}
+            <div
+              style={{
+                display: 'grid',
+                gridTemplateColumns: '1fr',
+                gap: '10px',
+                backgroundColor: '#F8FAFC',
+                padding: '16px',
+                borderRadius: '12px',
+                border: '1px solid #E2E8F0',
+                marginBottom: '20px',
+              }}
+            >
+              {listingBackupModal.codes.map((code, idx) => (
+                <div
+                  key={idx}
+                  style={{
+                    backgroundColor: '#FFFFFF',
+                    padding: '11px 14px',
+                    borderRadius: '8px',
+                    border: '1px solid #CBD5E1',
+                    fontFamily: 'monospace',
+                    fontSize: '16px',
+                    fontWeight: '800',
+                    color: '#1E293B',
+                    letterSpacing: '1.5px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'space-between',
+                  }}
+                >
+                  <span style={{ color: '#94A3B8', fontSize: '12px', fontWeight: '700' }}>
+                    CODE #{idx + 1}
+                  </span>
+                  <span>{code}</span>
+                  <span
+                    style={{
+                      fontSize: '10px',
+                      fontWeight: '700',
+                      backgroundColor: '#ECFDF5',
+                      color: '#059669',
+                      padding: '2px 6px',
+                      borderRadius: '4px',
+                    }}
+                  >
+                    SINGLE-USE
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            {/* Copy & Download Buttons */}
+            <div style={{ display: 'flex', gap: '10px', marginBottom: '16px' }}>
+              <button
+                type="button"
+                onClick={copyListingCodesToClipboard}
+                style={{
+                  flex: 1,
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid #CBD5E1',
+                  backgroundColor: listingBackupModal.copied ? '#ECFDF5' : '#FFFFFF',
+                  color: listingBackupModal.copied ? '#059669' : '#334155',
+                  fontWeight: '700',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                }}
+              >
+                <Copy size={15} />
+                <span>{listingBackupModal.copied ? 'Copied!' : 'Copy Codes'}</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={downloadListingCodesFile}
+                style={{
+                  flex: 1,
+                  padding: '10px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid #CBD5E1',
+                  backgroundColor: '#FFFFFF',
+                  color: '#334155',
+                  fontWeight: '700',
+                  fontSize: '13px',
+                  cursor: 'pointer',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: '6px',
+                }}
+              >
+                <Download size={15} />
+                <span>Download .txt</span>
+              </button>
+            </div>
+
+            <button
+              type="button"
+              onClick={() =>
+                setListingBackupModal((prev) => ({
+                  ...prev,
+                  isOpen: false,
+                }))
+              }
+              style={{
+                width: '100%',
+                padding: '13px 18px',
+                backgroundColor: '#4F46E5',
+                color: '#FFFFFF',
+                border: 'none',
+                borderRadius: '10px',
+                fontSize: '14px',
+                fontWeight: '800',
+                cursor: 'pointer',
+                boxShadow: '0 4px 12px rgba(79, 70, 229, 0.25)',
+              }}
+            >
+              I HAVE SAVED MY 3 LISTING BACKUP CODES
+            </button>
           </div>
         </div>
       )}

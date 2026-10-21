@@ -1,8 +1,21 @@
+import json
 import logging
+import sqlite3
+import sys
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from pathlib import Path
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
@@ -15,6 +28,7 @@ from app.models import (
     PropertySeller,
     PropertyStatus,
     User,
+    UserBackupCode,
     UserBehaviorBaseline,
     UserDevice,
     UserRole,
@@ -27,13 +41,108 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("propertybase")
 
 
+def ensure_auth_tables_schema():
+    """
+    Ensures mfa_otps and user_backup_codes in PostgreSQL match the current SQLAlchemy model columns.
+    """
+    try:
+        insp = inspect(engine)
+        table_names = insp.get_table_names()
+
+        if "mfa_otps" in table_names:
+            cols = {c["name"] for c in insp.get_columns("mfa_otps")}
+            expected_otp_cols = {"id", "user_id", "otp_code_hash", "attempts", "is_used", "expires_at", "created_at"}
+            if not expected_otp_cols.issubset(cols):
+                logger.info(f"Recreating mfa_otps table to match expected schema (found columns: {cols})")
+                with engine.begin() as conn:
+                    conn.execute(text("DROP TABLE IF EXISTS mfa_otps CASCADE"))
+
+        if "user_backup_codes" in table_names:
+            cols = {c["name"] for c in insp.get_columns("user_backup_codes")}
+            expected_bc_cols = {"id", "user_id", "code_hash", "is_used", "used_at", "created_at"}
+            if not expected_bc_cols.issubset(cols):
+                logger.info(f"Recreating user_backup_codes table to match expected schema (found columns: {cols})")
+                with engine.begin() as conn:
+                    conn.execute(text("DROP TABLE IF EXISTS user_backup_codes CASCADE"))
+    except Exception as exc:
+        logger.warning(f"Schema inspection warning: {exc}")
+
+
+def sync_local_sqlite_users_to_db(db: Session):
+    """
+    Migrates any user accounts created in local propertybase.db into the active PostgreSQL database
+    so no previously registered user accounts are missing.
+    """
+    sqlite_path = Path(__file__).resolve().parent.parent / "propertybase.db"
+    if not sqlite_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(sqlite_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users")
+        rows = cur.fetchall()
+        for r in rows:
+            row_dict = dict(r)
+            email = (row_dict.get("email") or "").strip().lower()
+            if not email:
+                continue
+            existing = db.query(User).filter(func.lower(User.email) == email).first()
+            if not existing:
+                username = row_dict.get("username")
+                if username:
+                    u_clash = db.query(User).filter(User.username == username).first()
+                    if u_clash:
+                        username = f"{username}_{email.split('@')[0]}"
+                pwd_hash = row_dict.get("password_hash") or row_dict.get("hashed_password") or get_password_hash("PropertyPass123!")
+                raw_bc = row_dict.get("backup_codes")
+                if isinstance(raw_bc, str):
+                    try:
+                        bc_list = json.loads(raw_bc)
+                    except Exception:
+                        bc_list = []
+                elif isinstance(raw_bc, list):
+                    bc_list = raw_bc
+                else:
+                    bc_list = []
+
+                role_str = str(row_dict.get("role") or "SELLER").upper()
+                role_val = UserRole.ADMIN if "ADMIN" in role_str else UserRole.SELLER
+
+                new_u = User(
+                    first_name=row_dict.get("first_name"),
+                    last_name=row_dict.get("last_name"),
+                    mobile_number=row_dict.get("mobile_number"),
+                    username=username,
+                    email=email,
+                    hashed_password=pwd_hash,
+                    role=role_val,
+                    status=UserStatus.ACTIVE,
+                    is_active=True,
+                    is_mfa_enabled=True,
+                    mfa_enabled=True,
+                    backup_codes=bc_list,
+                )
+                db.add(new_u)
+                db.commit()
+                db.refresh(new_u)
+                for h_code in bc_list:
+                    db.add(UserBackupCode(user_id=new_u.user_id, code_hash=h_code, is_used=False))
+                db.commit()
+                logger.info(f"Synced user account to PostgreSQL: {email}")
+        conn.close()
+    except Exception as exc:
+        db.rollback()
+        logger.warning(f"Local user sync note: {exc}")
+
+
 def seed_initial_demo_data(db: Session):
     """
     Seeds default admin and seller accounts, baseline telemetry, and sample property listings.
     """
     # 1. Admin Account
     admin_email = "admin@propertybase.com"
-    existing_admin = db.query(User).filter(User.email == admin_email).first()
+    existing_admin = db.query(User).filter(func.lower(User.email) == admin_email).first()
     if not existing_admin:
         admin_codes = generate_backup_codes(8)
         admin_user = User(
@@ -49,9 +158,40 @@ def seed_initial_demo_data(db: Session):
         db.refresh(admin_user)
         logger.info(f"Seeded System Administrator: {admin_email} / AdminPass123!")
 
-    # 2. Demo Seller Account
+    # 2. Project Owner Account (Wesley)
+    wesley_email = "wesley.mutisya@strathmore.edu"
+    existing_wesley = db.query(User).filter(func.lower(User.email) == wesley_email).first()
+    if not existing_wesley:
+        wesley_codes = generate_backup_codes(8)
+        hashed_wesley_codes = [hash_secret_code(c) for c in wesley_codes]
+        wesley_user = User(
+            first_name="Wesley",
+            last_name="Mutisya",
+            username="wesley_mutisya",
+            email=wesley_email,
+            mobile_number="+254700000000",
+            hashed_password=get_password_hash("WesleyPass123!"),
+            role=UserRole.SELLER,
+            status=UserStatus.ACTIVE,
+            is_active=True,
+            is_mfa_enabled=True,
+            mfa_enabled=True,
+            backup_codes=hashed_wesley_codes,
+        )
+        db.add(wesley_user)
+        db.commit()
+        db.refresh(wesley_user)
+        for h_code in hashed_wesley_codes:
+            db.add(UserBackupCode(user_id=wesley_user.user_id, code_hash=h_code, is_used=False))
+        db.commit()
+        logger.info(f"Seeded Owner Account: {wesley_email}")
+
+    # Sync any other accounts from local SQLite DB into PostgreSQL
+    sync_local_sqlite_users_to_db(db)
+
+    # 3. Demo Seller Account
     seller_email = "seller@realestate.com"
-    existing_seller = db.query(User).filter(User.email == seller_email).first()
+    existing_seller = db.query(User).filter(func.lower(User.email) == seller_email).first()
     if not existing_seller:
         seller_codes = generate_backup_codes(8)
         seller_user = User(
@@ -171,13 +311,34 @@ def seed_initial_demo_data(db: Session):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Ensure tables exist and seed demo data
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
+    # Startup: Ensure tables exist and match current schema, then seed data
+    ensure_auth_tables_schema()
     try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as exc:
+        logger.warning(f"Primary engine table creation warning: {exc}")
+
+    # Use get_db's failover-safe session for startup seeding
+    from app.core.database import FallbackSessionLocal, fallback_engine
+    try:
+        Base.metadata.create_all(bind=fallback_engine)
+    except Exception:
+        pass
+
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
         seed_initial_demo_data(db)
-    finally:
         db.close()
+    except Exception as exc:
+        logger.warning(f"Primary DB unreachable during startup seed ({exc}); seeding local fallback DB.")
+        try:
+            fb_db = FallbackSessionLocal()
+            seed_initial_demo_data(fb_db)
+            fb_db.close()
+        except Exception as fb_exc:
+            logger.warning(f"Fallback DB seed warning: {fb_exc}")
+
     # Pre-warm ML model
     RiskEngine.get_model()
     yield
@@ -201,6 +362,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error on {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Server error: {str(exc)}"},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
 
 # Router registration
 app.include_router(auth_router, prefix="/api/v1")

@@ -88,10 +88,10 @@ class SMSService:
 
             with urllib.request.urlopen(req, timeout=10) as resp:
                 if resp.status in (200, 201):
-                    logger.info(f"✅ [TWILIO SMS SUCCESS] Dispatched to {to_phone}")
+                    logger.info(f"[TWILIO SMS SUCCESS] Dispatched to {to_phone}")
                     return True
         except Exception as e:
-            logger.warning(f"⚠️ Twilio SMS transmission failed: {e}")
+            logger.warning(f"[TWILIO SMS WARNING] Twilio SMS transmission failed: {e}")
         return False
 
     @classmethod
@@ -129,11 +129,11 @@ class SMSService:
         # 3. Always log in terminal with prominent banner for instant transparency
         if otp_code:
             logger.info(
-                f"📱 [SMS SECURITY CODE DISPATCH] To: {masked_phone} ({clean_phone}) | "
+                f"[SMS SECURITY CODE DISPATCH] To: {masked_phone} ({clean_phone}) | "
                 f"CODE: [{otp_code}] | Gateway Sent: {twilio_sent}"
             )
         else:
-            logger.info(f"📱 [SMS DISPATCH] To: {masked_phone} | Message: {message_text}")
+            logger.info(f"[SMS DISPATCH] To: {masked_phone} | Message: {message_text}")
 
         return record
 
