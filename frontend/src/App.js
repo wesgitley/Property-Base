@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import AdminDashboard from './AdminDashboard';
 import SellerDashboard from './SellerDashboard';
 import {
@@ -90,20 +90,22 @@ export default function App() {
   const [regEmail, setRegEmail] = useState('');
   const [regPassword, setRegPassword] = useState('');
 
-  // MFA & Pre-auth state
+  // MFA & Contextual Number-Matching Push Notification state
   const [preAuthToken, setPreAuthToken] = useState('');
   const [mfaEmail, setMfaEmail] = useState('');
+  const [pushChallengeId, setPushChallengeId] = useState('');
+  const [pushNumber, setPushNumber] = useState('');
+  const [pushContext, setPushContext] = useState(null);
+  const [pushApprovalUrl, setPushApprovalUrl] = useState('');
+  const [pushStatus, setPushStatus] = useState('PENDING'); // 'PENDING' | 'APPROVED' | 'DENIED' | 'EXPIRED'
+  const [pushRemainingAttempts, setPushRemainingAttempts] = useState(3);
+  const [pushResending, setPushResending] = useState(false);
   const [backupCodeInput, setBackupCodeInput] = useState('');
-  const [mfaMethod, setMfaMethod] = useState('backup'); // 'backup' | 'email_otp' | 'sms_otp'
+  const [mfaMethod, setMfaMethod] = useState('contextual_push');
   const [emailOtpInput, setEmailOtpInput] = useState('');
-  const [smsOtpInput, setSmsOtpInput] = useState('');
-  const [mfaCountryCode, setMfaCountryCode] = useState('+254');
-  const [mfaPhoneDigits, setMfaPhoneDigits] = useState('');
-  const [mfaPhoneInput, setMfaPhoneInput] = useState('');
-  const [mfaPhoneMasked, setMfaPhoneMasked] = useState('');
   const [backupCodesDepleted, setBackupCodesDepleted] = useState(false);
 
-  // Backup Codes Modal (Registration or Auto-Refill on depletion)
+  // Backup Codes Modal (used when refilling backup codes from dashboard)
   const [showBackupCodesModal, setShowBackupCodesModal] = useState(false);
   const [generatedCodes, setGeneratedCodes] = useState([]);
   const [copiedCodes, setCopiedCodes] = useState(false);
@@ -140,6 +142,60 @@ export default function App() {
   const [statusMessage, setStatusMessage] = useState(null); // { type: 'error' | 'success', text: '' }
 
   const clearMessages = () => setStatusMessage(null);
+
+  // Poll Contextual Push Challenge status every 2 seconds while on MFA screen
+  useEffect(() => {
+    if (activeTab !== 'mfa' || !pushChallengeId || pushStatus !== 'PENDING') {
+      return undefined;
+    }
+
+    const intervalId = setInterval(async () => {
+      try {
+        const res = await fetch(
+          `${API_BASE}/auth/mfa/push-status?challenge_id=${encodeURIComponent(pushChallengeId)}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+
+        if (typeof data.remaining_attempts === 'number') {
+          setPushRemainingAttempts(data.remaining_attempts);
+        }
+
+        if (data.status === 'APPROVED' && data.token_data) {
+          clearInterval(intervalId);
+          setPushStatus('APPROVED');
+          setAccessToken(data.token_data.access_token);
+          setAuthenticatedUser(data.token_data.user);
+          setStatusMessage({
+            type: 'success',
+            text: `Contextual Push Number (${pushNumber}) verified! Welcome back, ${
+              data.token_data.user.first_name || data.token_data.user.email
+            }.`,
+          });
+        } else if (data.status === 'DENIED' || data.status === 'EXPIRED') {
+          clearInterval(intervalId);
+          setPushStatus(data.status);
+          setStatusMessage({
+            type: 'error',
+            text:
+              data.error_message ||
+              (data.status === 'DENIED'
+                ? 'Sign-in attempt was denied or blocked due to number mismatch.'
+                : 'Push challenge expired. Please send a new push notification.'),
+          });
+        } else if (data.error_message) {
+          setStatusMessage({
+            type: 'error',
+            text: data.error_message,
+          });
+        }
+      } catch (e) {
+        // Ignore transient network poll errors
+      }
+    }, 2000);
+
+    return () => clearInterval(intervalId);
+  }, [activeTab, pushChallengeId, pushStatus, pushNumber]);
 
   // Password complexity helper (uppercase, lowercase, number, special character, 8+ chars)
   const validatePasswordComplexity = (pwd) => {
@@ -188,9 +244,12 @@ export default function App() {
         throw new Error(data.detail || 'Registration failed. Check details.');
       }
 
-      setGeneratedCodes(data.backup_codes || []);
-      setShowBackupCodesModal(true);
-      setMfaEmail(data.email);
+      setLoginEmail(data.email || regEmail);
+      setActiveTab('login');
+      setStatusMessage({
+        type: 'success',
+        text: 'Account created! Sign in with your email and password to receive your Contextual Number-Matching Push Notification.',
+      });
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
     } finally {
@@ -198,7 +257,7 @@ export default function App() {
     }
   };
 
-  // ── 2. LOGIN STEP 1 HANDLER ──────────────────────────────────────────────
+  // ── 2. LOGIN STEP 1 HANDLER (TRIGGERS CONTEXTUAL NUMBER-MATCHING PUSH) ───
   const handleLogin = async (e) => {
     e.preventDefault();
     clearMessages();
@@ -221,30 +280,61 @@ export default function App() {
         throw new Error(data.detail || 'Login failed.');
       }
 
-      // Step 1 Success: MFA Required
+      // Step 1 Success: Contextual Number-Matching Push Notification Triggered!
       setPreAuthToken(data.mfa_pre_auth_token);
       setMfaEmail(data.email);
-      setMfaPhoneMasked(data.masked_phone || '');
-      setMfaPhoneInput(data.mobile_number || '');
-      setBackupCodesDepleted(!!data.backup_codes_depleted);
-      if (data.backup_codes_depleted) {
-        setMfaMethod('email_otp');
-        setStatusMessage({
-          type: 'success',
-          text: 'All backup codes were previously used. A one-time verification code has been dispatched to your email.',
-        });
-      } else {
-        setMfaMethod('backup');
-        setStatusMessage({
-          type: 'success',
-          text: 'Credentials verified! Please enter your single-use backup code to finish signing in.',
-        });
-      }
+      setPushChallengeId(data.push_challenge_id || '');
+      setPushNumber(data.push_number || '');
+      setPushContext(data.push_context || null);
+      setPushApprovalUrl(data.push_approval_url || '');
+      setPushStatus('PENDING');
+      setPushRemainingAttempts(3);
+      setMfaMethod('contextual_push');
+      setStatusMessage({
+        type: 'success',
+        text: `Push Notification sent to ${data.email}! Open the email and tap ${data.push_number} from the 3 number options to sign in.`,
+      });
       setActiveTab('mfa');
     } catch (err) {
       setStatusMessage({ type: 'error', text: err.message });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleResendPushChallenge = async () => {
+    if (!preAuthToken) return;
+    setPushResending(true);
+    clearMessages();
+    try {
+      const res = await fetch(`${API_BASE}/auth/mfa/push-resend`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          mfa_pre_auth_token: preAuthToken,
+          device_hash: `dev_${navigator.userAgent.slice(0, 30)}`,
+          device_name: 'Property Base Secure Browser',
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.detail || 'Failed to resend push notification.');
+      }
+
+      setPushChallengeId(data.push_challenge_id || '');
+      setPushNumber(data.push_number || '');
+      setPushContext(data.push_context || null);
+      setPushApprovalUrl(data.push_approval_url || '');
+      setPushStatus('PENDING');
+      setPushRemainingAttempts(1);
+      setStatusMessage({
+        type: 'success',
+        text: `New 2-digit number (${data.push_number}) generated and sent to ${mfaEmail}! Tap ${data.push_number} in the email to approve.`,
+      });
+    } catch (err) {
+      setStatusMessage({ type: 'error', text: err.message });
+    } finally {
+      setPushResending(false);
     }
   };
 
@@ -360,76 +450,6 @@ export default function App() {
       setLoading(false);
     }
   };
-
-  const handleRequestSmsOtp = async (customPhone = null) => {
-    clearMessages();
-    setLoading(true);
-    try {
-      const phoneToSend = customPhone || (mfaPhoneDigits.trim() ? `${mfaCountryCode}${mfaPhoneDigits.trim()}` : (mfaPhoneInput || null));
-      const res = await fetch(`${API_BASE}/auth/mfa/send-sms-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mfa_pre_auth_token: preAuthToken,
-          phone_number: phoneToSend,
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Failed to dispatch SMS code.');
-      setMfaMethod('sms_otp');
-      setMfaPhoneMasked(data.masked_phone || '');
-      setStatusMessage({
-        type: 'success',
-        text: data.dev_code
-          ? `SMS Code: ${data.dev_code} (Dispatched to ${data.masked_phone || 'your phone'})`
-          : `A 6-digit verification code has been sent via SMS to ${data.masked_phone || 'your phone'}.`,
-      });
-    } catch (err) {
-      setStatusMessage({ type: 'error', text: err.message });
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const handleVerifySmsOtp = async (e) => {
-    e.preventDefault();
-    clearMessages();
-    setLoading(true);
-
-    try {
-      const res = await fetch(`${API_BASE}/auth/mfa/verify-sms-otp`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          mfa_pre_auth_token: preAuthToken,
-          otp_code: smsOtpInput.trim(),
-          device_hash: `dev_${navigator.userAgent.slice(0, 30)}`,
-          device_name: 'Property Base Secure Browser',
-        }),
-      });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.detail || 'Failed to verify SMS code.');
-
-      setAccessToken(data.access_token);
-      setAuthenticatedUser(data.user);
-
-      if (data.new_backup_codes && data.new_backup_codes.length > 0) {
-        setGeneratedCodes(data.new_backup_codes);
-        setModalMode('refill');
-        setShowBackupCodesModal(true);
-      } else {
-        setStatusMessage({
-          type: 'success',
-          text: `Welcome back, ${data.user.first_name || data.user.email}! Verified via SMS OTP.`,
-        });
-      }
-    } catch (err) {
-      setStatusMessage({ type: 'error', text: err.message });
-    } finally {
-      setLoading(false);
-    }
-  };
-
 
   // ── 4. FORGOT PASSWORD (STEP 1: REQUEST CODE VIA EMAIL OR SMS) ────────────
   const handleRequestPasswordReset = async (e) => {
@@ -866,6 +886,13 @@ export default function App() {
         <>
           <SellerDashboard
             user={authenticatedUser}
+            token={accessToken}
+            onUserUpdate={(updatedUser) => setAuthenticatedUser(updatedUser)}
+            onShowBackupCodes={(codes) => {
+              setGeneratedCodes(codes || []);
+              setModalMode('refill');
+              setShowBackupCodesModal(true);
+            }}
             onLogout={handleLogout}
             onSwitchToAdmin={() => setAdminViewMode('soc')}
           />
@@ -893,6 +920,13 @@ export default function App() {
       <>
         <SellerDashboard
           user={authenticatedUser}
+          token={accessToken}
+          onUserUpdate={(updatedUser) => setAuthenticatedUser(updatedUser)}
+          onShowBackupCodes={(codes) => {
+            setGeneratedCodes(codes || []);
+            setModalMode('refill');
+            setShowBackupCodesModal(true);
+          }}
           onLogout={handleLogout}
         />
         {renderBackupModal()}
@@ -1256,309 +1290,139 @@ export default function App() {
                 </form>
               )}
 
-              {/* ──────────────── TAB 3: MFA VERIFICATION ──────────────── */}
+              {/* ──────────────── TAB 3: MFA VERIFICATION (CONTEXTUAL NUMBER-MATCHING PUSH) ──────────────── */}
               {activeTab === 'mfa' && (
                 <div style={styles.form}>
                   <div style={styles.headingGroup}>
                     <div style={styles.iconCircle}>
-                      <KeyRound size={28} color="#4F46E5" />
+                      <ShieldCheck size={28} color="#4F46E5" />
                     </div>
-                    <h2 style={styles.formHeading}>Two-Factor Authentication</h2>
+                    <h2 style={styles.formHeading}>Contextual Number-Matching Push</h2>
                     <p style={styles.formSubheading}>
-                      {mfaMethod === 'sms_otp'
-                        ? 'Enter the 6-digit one-time code sent to your mobile phone via SMS'
-                        : mfaMethod === 'email_otp'
-                        ? 'Enter the 6-digit one-time code sent to your registered email'
-                        : 'Enter one of your single-use backup recovery codes to access Property Base'}
+                      Check your Gmail inbox for a push notification displaying your login location, device, and IP address along with 3 numbers. Tap the matching number below in your email to approve access.
                     </p>
                   </div>
 
                   {mfaEmail && (
                     <div style={styles.infoBanner}>
-                      Signing in as: <strong>{mfaEmail}</strong>
+                      Push notification sent to: <strong>{mfaEmail}</strong>
                     </div>
                   )}
 
-                  {/* MFA Method Toggle Bar */}
-                  <div style={{ display: 'flex', gap: '8px', marginBottom: '18px', background: '#F1F5F9', padding: '4px', borderRadius: '8px' }}>
-                    <button
-                      type="button"
-                      onClick={() => { setMfaMethod('backup'); clearMessages(); }}
-                      disabled={backupCodesDepleted}
-                      style={{
-                        flex: 1,
-                        padding: '8px 4px',
-                        fontSize: '12px',
-                        fontWeight: '600',
-                        borderRadius: '6px',
-                        border: 'none',
-                        cursor: backupCodesDepleted ? 'not-allowed' : 'pointer',
-                        background: mfaMethod === 'backup' ? '#FFFFFF' : 'transparent',
-                        color: mfaMethod === 'backup' ? '#4F46E5' : (backupCodesDepleted ? '#94A3B8' : '#64748B'),
-                        boxShadow: mfaMethod === 'backup' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '4px'
-                      }}
-                    >
-                      <KeyRound size={14} /> Backup Code
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { setMfaMethod('email_otp'); clearMessages(); }}
-                      style={{
-                        flex: 1,
-                        padding: '8px 4px',
-                        fontSize: '12px',
-                        fontWeight: '600',
-                        borderRadius: '6px',
-                        border: 'none',
-                        cursor: 'pointer',
-                        background: mfaMethod === 'email_otp' ? '#FFFFFF' : 'transparent',
-                        color: mfaMethod === 'email_otp' ? '#4F46E5' : '#64748B',
-                        boxShadow: mfaMethod === 'email_otp' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '4px'
-                      }}
-                    >
-                      <Mail size={14} /> Email OTP
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { setMfaMethod('sms_otp'); clearMessages(); }}
-                      style={{
-                        flex: 1,
-                        padding: '8px 4px',
-                        fontSize: '12px',
-                        fontWeight: '600',
-                        borderRadius: '6px',
-                        border: 'none',
-                        cursor: 'pointer',
-                        background: mfaMethod === 'sms_otp' ? '#FFFFFF' : 'transparent',
-                        color: mfaMethod === 'sms_otp' ? '#4F46E5' : '#64748B',
-                        boxShadow: mfaMethod === 'sms_otp' ? '0 1px 3px rgba(0,0,0,0.1)' : 'none',
-                        display: 'flex',
-                        alignItems: 'center',
-                        justifyContent: 'center',
-                        gap: '4px'
-                      }}
-                    >
-                      <Phone size={14} /> SMS to Phone
-                    </button>
+                  {/* Prominent 2-Digit Number Display Card */}
+                  <div style={{
+                    background: 'linear-gradient(135deg, #EEF2FF 0%, #E0E7FF 100%)',
+                    border: '2px solid #6366F1',
+                    borderRadius: '16px',
+                    padding: '24px 20px',
+                    textAlign: 'center',
+                    marginBottom: '18px',
+                    boxShadow: '0 8px 20px rgba(79, 70, 229, 0.12)',
+                  }}>
+                    <div style={{
+                      fontSize: '11px',
+                      fontWeight: '800',
+                      textTransform: 'uppercase',
+                      letterSpacing: '1.5px',
+                      color: '#4338CA',
+                      marginBottom: '8px',
+                    }}>
+                      Tap This Matching Number in Your Email
+                    </div>
+                    <div style={{
+                      fontSize: '56px',
+                      fontWeight: '900',
+                      color: '#1E1B4B',
+                      letterSpacing: '6px',
+                      fontFamily: "'Inter', monospace, sans-serif",
+                      lineHeight: '1.1',
+                      margin: '6px 0 10px 0',
+                    }}>
+                      {pushNumber || '--'}
+                    </div>
+                    <div style={{
+                      display: 'inline-flex',
+                      alignItems: 'center',
+                      gap: '6px',
+                      padding: '5px 12px',
+                      borderRadius: '999px',
+                      fontSize: '12px',
+                      fontWeight: '700',
+                      background: pushStatus === 'PENDING' ? '#FEF3C7' : (pushStatus === 'APPROVED' ? '#DCFCE7' : '#FEE2E2'),
+                      color: pushStatus === 'PENDING' ? '#92400E' : (pushStatus === 'APPROVED' ? '#166534' : '#991B1B'),
+                      border: pushStatus === 'PENDING' ? '1px solid #F59E0B' : (pushStatus === 'APPROVED' ? '1px solid #22C55E' : '1px solid #EF4444'),
+                    }}>
+                      {pushStatus === 'PENDING' && (
+                        <>
+                          <RefreshCw size={13} />
+                          <span>Waiting for you to tap {pushNumber} in your Gmail...</span>
+                        </>
+                      )}
+                      {pushStatus === 'APPROVED' && (
+                        <>
+                          <CheckCircle size={13} />
+                          <span>Number matched! Signing you in...</span>
+                        </>
+                      )}
+                      {(pushStatus === 'DENIED' || pushStatus === 'EXPIRED') && (
+                        <>
+                          <AlertCircle size={13} />
+                          <span>Challenge {pushStatus.toLowerCase()} — request a new push below</span>
+                        </>
+                      )}
+                    </div>
                   </div>
 
-                  {backupCodesDepleted && (
-                    <div style={{ ...styles.errorBanner, background: '#FEF3C7', color: '#92400E', border: '1px solid #F59E0B' }}>
-                      <AlertCircle size={20} style={{ minWidth: 20 }} />
-                      <span style={{ fontSize: 13, lineHeight: '18px' }}>
-                        All 8 initial backup codes have been used. A one-time verification code was sent to your email.
-                        A fresh set of 8 backup codes will be generated upon login.
-                      </span>
+                  {/* Contextual Login Telemetry Displayed in Push Notification */}
+                  {pushContext && (
+                    <div style={{
+                      background: '#F8FAFC',
+                      border: '1px solid #E2E8F0',
+                      borderRadius: '12px',
+                      padding: '14px 16px',
+                      marginBottom: '18px',
+                    }}>
+                      <div style={{
+                        fontSize: '11px',
+                        fontWeight: '700',
+                        textTransform: 'uppercase',
+                        letterSpacing: '0.8px',
+                        color: '#475569',
+                        marginBottom: '10px',
+                        display: 'flex',
+                        alignItems: 'center',
+                        gap: '6px',
+                      }}>
+                        <Lock size={13} color="#4F46E5" />
+                        <span>Login Context Dispatched to Your Gmail</span>
+                      </div>
+                      <div style={{ display: 'grid', gap: '8px', fontSize: '12.5px' }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #F1F5F9', paddingBottom: '6px' }}>
+                          <span style={{ color: '#64748B', fontWeight: '600' }}>Location:</span>
+                          <span style={{ color: '#0F172A', fontWeight: '700', textAlign: 'right' }}>{pushContext.location}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', borderBottom: '1px solid #F1F5F9', paddingBottom: '6px' }}>
+                          <span style={{ color: '#64748B', fontWeight: '600' }}>Device:</span>
+                          <span style={{ color: '#0F172A', fontWeight: '700', textAlign: 'right' }}>{pushContext.device}</span>
+                        </div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                          <span style={{ color: '#64748B', fontWeight: '600' }}>IP Address:</span>
+                          <span style={{ color: '#0F172A', fontWeight: '700', fontFamily: 'monospace' }}>{pushContext.ip_address}</span>
+                        </div>
+                      </div>
                     </div>
                   )}
 
-                  {mfaMethod === 'backup' && !backupCodesDepleted && (
-                    <form onSubmit={handleVerifyBackupCode}>
-                      <div style={styles.inputGroup}>
-                        <span style={styles.inputIcon}><KeyRound size={18} color="#6366F1" /></span>
-                        <input
-                          type="text"
-                          required
-                          placeholder="Backup Code (e.g., A8K2-9P1Z)"
-                          value={backupCodeInput}
-                          onChange={(e) => setBackupCodeInput(e.target.value.toUpperCase())}
-                          style={{ ...styles.textInput, letterSpacing: '2px', fontWeight: 'bold' }}
-                        />
-                      </div>
-
-                      <button
-                        type="submit"
-                        disabled={loading || !backupCodeInput.trim()}
-                        style={loading || !backupCodeInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
-                      >
-                        {loading ? 'Verifying Code...' : 'VERIFY & ACCESS ACCOUNT'}
-                      </button>
-
-                      <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
-                        <button
-                          type="button"
-                          onClick={() => { setMfaMethod('email_otp'); clearMessages(); }}
-                          style={styles.textLink}
-                        >
-                          Use Email Code
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => { setMfaMethod('sms_otp'); clearMessages(); }}
-                          style={styles.textLink}
-                        >
-                          Use SMS Code
-                        </button>
-                      </div>
-                    </form>
-                  )}
-
-                  {mfaMethod === 'email_otp' && (
-                    <form onSubmit={handleVerifyEmailOtp}>
-                      <div style={styles.inputGroup}>
-                        <span style={styles.inputIcon}><Mail size={18} color="#6366F1" /></span>
-                        <input
-                          type="text"
-                          required
-                          maxLength={6}
-                          placeholder="6-Digit Email Code"
-                          value={emailOtpInput}
-                          onChange={(e) => setEmailOtpInput(e.target.value.trim())}
-                          style={{ ...styles.textInput, letterSpacing: '4px', fontWeight: 'bold' }}
-                        />
-                      </div>
-
-                      <p style={styles.helperText}>
-                        * Check your email for the 6-digit code. Valid for 10 minutes.
-                      </p>
-
-                      <button
-                        type="submit"
-                        disabled={loading || !emailOtpInput.trim()}
-                        style={loading || !emailOtpInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
-                      >
-                        {loading ? 'Verifying Email Code...' : 'VERIFY & ACCESS ACCOUNT'}
-                      </button>
-
-                      <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
-                        <button
-                          type="button"
-                          onClick={handleRequestEmailOtp}
-                          style={styles.textLink}
-                        >
-                          Resend Code
-                        </button>
-                        {!backupCodesDepleted && (
-                          <button
-                            type="button"
-                            onClick={() => { setMfaMethod('backup'); clearMessages(); }}
-                            style={styles.textLink}
-                          >
-                            Use Backup Code
-                          </button>
-                        )}
-                      </div>
-                    </form>
-                  )}
-
-                  {mfaMethod === 'sms_otp' && (
-                    <form onSubmit={handleVerifySmsOtp}>
-                      {mfaPhoneMasked && (
-                        <div style={{ ...styles.infoBanner, marginBottom: '14px', textAlign: 'center' }}>
-                          Registered Phone: <strong>{mfaPhoneMasked}</strong>
-                        </div>
-                      )}
-
-                      <div style={{ marginBottom: '16px' }}>
-                        <label style={{ display: 'block', fontSize: '12px', fontWeight: '600', color: '#475569', marginBottom: '6px' }}>
-                          Confirm Your Registered Phone:
-                        </label>
-                        <div style={{ display: 'flex', gap: '8px', marginBottom: '8px' }}>
-                          <div style={{ width: '145px', flexShrink: 0 }}>
-                            <select
-                              value={mfaCountryCode}
-                              onChange={(e) => setMfaCountryCode(e.target.value)}
-                              style={{
-                                width: '100%',
-                                height: '46px',
-                                padding: '0 8px',
-                                borderRadius: '8px',
-                                border: '1px solid #E2E8F0',
-                                background: '#F8FAFC',
-                                fontSize: '13px',
-                                fontWeight: '600',
-                                color: '#1E293B',
-                                cursor: 'pointer',
-                                outline: 'none',
-                              }}
-                            >
-                              {COUNTRY_CODES.map((c) => (
-                                <option key={c.code} value={c.code}>
-                                  {c.flag} {c.code} ({c.name})
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                          <div style={{ ...styles.inputGroup, flex: 1, marginBottom: 0 }}>
-                            <span style={styles.inputIcon}><Phone size={18} color="#6366F1" /></span>
-                            <input
-                              type="tel"
-                              maxLength={9}
-                              placeholder="712 345 678 (9 digits)"
-                              value={mfaPhoneDigits}
-                              onChange={(e) => handlePhoneDigitsChange(e.target.value, setMfaPhoneDigits, setMfaCountryCode)}
-                              style={{ ...styles.textInput, letterSpacing: '1px' }}
-                            />
-                          </div>
-                        </div>
-                        <button
-                          type="button"
-                          onClick={() => handleRequestSmsOtp(`${mfaCountryCode}${mfaPhoneDigits.trim()}`)}
-                          disabled={loading || mfaPhoneDigits.trim().length < 9}
-                          style={{
-                            ...(loading || mfaPhoneDigits.trim().length < 9 ? styles.primaryBtnDisabled : styles.primaryBtn),
-                            padding: '10px 14px',
-                            fontSize: '13px',
-                          }}
-                        >
-                          {loading ? 'Confirming & Sending SMS...' : 'CONFIRM PHONE & SEND 6-DIGIT CODE'}
-                        </button>
-                      </div>
-
-                      <div style={styles.inputGroup}>
-                        <span style={styles.inputIcon}><KeyRound size={18} color="#6366F1" /></span>
-                        <input
-                          type="text"
-                          required
-                          maxLength={6}
-                          placeholder="6-Digit SMS Code"
-                          value={smsOtpInput}
-                          onChange={(e) => setSmsOtpInput(e.target.value.trim())}
-                          style={{ ...styles.textInput, letterSpacing: '4px', fontWeight: 'bold' }}
-                        />
-                      </div>
-
-                      <p style={styles.helperText}>
-                        * Check your SMS inbox for the 6-digit code. Valid for 10 minutes.
-                      </p>
-
-                      <button
-                        type="submit"
-                        disabled={loading || !smsOtpInput.trim()}
-                        style={loading || !smsOtpInput.trim() ? styles.primaryBtnDisabled : styles.primaryBtn}
-                      >
-                        {loading ? 'Verifying SMS Code...' : 'VERIFY & ACCESS ACCOUNT'}
-                      </button>
-
-                      <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'space-between' }}>
-                        <button
-                          type="button"
-                          onClick={() => handleRequestSmsOtp(`${mfaCountryCode}${mfaPhoneDigits.trim()}`)}
-                          disabled={loading || mfaPhoneDigits.trim().length < 9}
-                          style={styles.textLink}
-                        >
-                          Resend SMS Code
-                        </button>
-                        {!backupCodesDepleted && (
-                          <button
-                            type="button"
-                            onClick={() => { setMfaMethod('backup'); clearMessages(); }}
-                            style={styles.textLink}
-                          >
-                            Use Backup Code
-                          </button>
-                        )}
-                      </div>
-                    </form>
-                  )}
+                  {/* Resend / Generate New 2-Digit Push Challenge Button */}
+                  <button
+                    type="button"
+                    onClick={handleResendPushChallenge}
+                    disabled={pushResending}
+                    style={pushResending ? styles.primaryBtnDisabled : styles.primaryBtn}
+                  >
+                    <RefreshCw size={16} style={{ marginRight: '8px' }} />
+                    {pushResending ? 'Sending New Push Notification...' : 'SEND NEW PUSH NOTIFICATION (NEW NUMBER)'}
+                  </button>
 
                   <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
                     <p style={styles.footerPrompt}>
@@ -1576,8 +1440,11 @@ export default function App() {
                       onClick={() => {
                         setPreAuthToken(null);
                         setMfaEmail('');
-                        setBackupCodeInput('');
-                        setEmailOtpInput('');
+                        setPushChallengeId(null);
+                        setPushNumber('');
+                        setPushContext(null);
+                        setPushApprovalUrl('');
+                        setPushStatus('PENDING');
                         setActiveTab('login');
                         clearMessages();
                       }}
