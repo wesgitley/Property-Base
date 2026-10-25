@@ -701,7 +701,7 @@ def _finalize_push_approval(db: Session, challenge: Dict[str, Any]) -> None:
     user_session = UserSession(
         session_id=session_id,
         user_id=user.user_id,
-        token_jti=jti,
+        token_jti=hash_secret_code(jti),
         ip_address=challenge["ip_address"],
         user_agent=challenge["user_agent"],
         device_id=device.device_id,
@@ -1171,7 +1171,8 @@ def google_login(
     user_agent = request.headers.get("user-agent", "Google-Browser")
     now = datetime.now(timezone.utc)
 
-    device_hash = req.device_hash or f"dev_google_{google_sub[:16] if google_sub else secrets.token_hex(8)}"
+    raw_dev_hash = req.device_hash or f"dev_google_{google_sub[:16] if google_sub else secrets.token_hex(8)}"
+    device_hash = hash_secret_code(f"salt_{user.user_id}_{raw_dev_hash}")
     device = (
         db.query(UserDevice)
         .filter(UserDevice.user_id == user.user_id, UserDevice.device_hash == device_hash)
@@ -1203,7 +1204,7 @@ def google_login(
     user_session = UserSession(
         session_id=session_id,
         user_id=user.user_id,
-        token_jti=jti,
+        token_jti=hash_secret_code(jti),
         ip_address=client_ip,
         user_agent=user_agent,
         device_id=device.device_id,
