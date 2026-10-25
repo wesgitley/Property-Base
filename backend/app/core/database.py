@@ -5,6 +5,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from sqlalchemy import String, TypeDecorator, create_engine, text
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.orm import declarative_base, sessionmaker
 
 logger = logging.getLogger(__name__)
@@ -20,29 +21,38 @@ DATABASE_URL = DATABASE_URL.strip().strip("'\"")
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
+FALLBACK_SQLITE_URL = "sqlite:///./propertybase.db"
+fallback_engine = create_engine(
+    FALLBACK_SQLITE_URL,
+    connect_args={"check_same_thread": False},
+)
+FallbackSessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=fallback_engine)
+
+
 # Connect with automatic fallback if Postgres host is unreachable (e.g. offline dev / network issue)
 def create_robust_engine(url: str):
     connect_args = {}
+    engine_kwargs = {"pool_pre_ping": True}
     if url.startswith("sqlite"):
         connect_args["check_same_thread"] = False
     elif "postgresql" in url:
         connect_args["connect_timeout"] = 5
+        engine_kwargs["pool_recycle"] = 300
 
     try:
-        eng = create_engine(url, connect_args=connect_args)
+        eng = create_engine(url, connect_args=connect_args, **engine_kwargs)
         # Test connection
         with eng.connect() as conn:
             conn.execute(text("SELECT 1"))
         logger.info(f"Database connected using: {url.split('@')[-1] if '@' in url else url}")
         return eng, url
     except Exception as exc:
-        fallback_url = f"sqlite:///./propertybase.db"
         logger.warning(
             f"Failed to connect to primary database ({url.split('@')[-1] if '@' in url else url}): {exc}. "
-            f"Falling back to local SQLite database: {fallback_url}"
+            f"Falling back to local SQLite database: {FALLBACK_SQLITE_URL}"
         )
-        fallback_eng = create_engine(fallback_url, connect_args={"check_same_thread": False})
-        return fallback_eng, fallback_url
+        return fallback_engine, FALLBACK_SQLITE_URL
+
 
 engine, ACTIVE_DATABASE_URL = create_robust_engine(DATABASE_URL)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
@@ -86,9 +96,38 @@ class GUID(TypeDecorator):
             return value
 
 
+_fallback_tables_initialized = False
+
+
 def get_db():
+    """
+    Yields a database session.
+    Uses pool_pre_ping=True on PostgreSQL so stale connections are automatically recycled.
+    If the remote PostgreSQL host becomes unreachable mid-runtime (e.g., DNS [Errno 11001]
+    or temporary network drop), seamlessly falls back to the local SQLite mirror so
+    authentication and app requests never crash with a 500 error.
+    """
+    global _fallback_tables_initialized
     db = SessionLocal()
+    try:
+        # Verify connection health before handing session to endpoint
+        db.execute(text("SELECT 1"))
+    except OperationalError as exc:
+        db.close()
+        logger.warning(
+            f"[DB FAILOVER] Primary PostgreSQL unreachable during request ({exc}). "
+            f"Using local SQLite fallback session."
+        )
+        if not _fallback_tables_initialized:
+            try:
+                Base.metadata.create_all(bind=fallback_engine)
+                _fallback_tables_initialized = True
+            except Exception:
+                pass
+        db = FallbackSessionLocal()
+
     try:
         yield db
     finally:
         db.close()
+

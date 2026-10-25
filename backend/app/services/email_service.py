@@ -95,6 +95,145 @@ def build_email_html(subject: str, heading: str, body_intro: str, code: Optional
 </html>"""
 
 
+def build_contextual_push_email_html(
+    subject: str,
+    to_email: str,
+    location: str,
+    device_info: str,
+    ip_address: str,
+    timestamp_str: str,
+    number_options: List[Dict[str, str]],
+    deny_url: str,
+) -> str:
+    """
+    Renders a Contextual Number-Matching Push Notification email for Gmail.
+    Displays the login location, device, and IP address, and presents 3 different
+    2-digit numbers (including the correct number shown on the web login screen)
+    so the user can tap the matching number directly in the email.
+    """
+    buttons_td_html = ""
+    for opt in number_options:
+        num_str = opt.get("number", "--")
+        tap_url = opt.get("url", "#")
+        buttons_td_html += f"""
+        <td width="33.33%" align="center" style="padding: 0 6px;">
+            <a href="{tap_url}"
+               style="display: block; background: linear-gradient(135deg, #4F46E5 0%, #3730A3 100%); background-color: #4F46E5; color: #FFFFFF; text-decoration: none; font-size: 28px; font-weight: 900; font-family: 'Courier New', Courier, monospace; padding: 18px 0; border-radius: 14px; border: 2px solid #312E81; box-shadow: 0 6px 14px rgba(79, 70, 229, 0.28); text-align: center; letter-spacing: 2px;">
+                {num_str}
+            </a>
+        </td>
+        """
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>{subject}</title>
+</head>
+<body style="margin: 0; padding: 0; background-color: #F1F5F9; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #0F172A;">
+    <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #F1F5F9; padding: 28px 14px;">
+        <tr>
+            <td align="center">
+                <table role="presentation" width="100%" style="max-width: 540px; background-color: #FFFFFF; border: 1px solid #CBD5E1; border-radius: 16px; overflow: hidden; box-shadow: 0 10px 25px rgba(15, 23, 42, 0.08);">
+                    <!-- Header -->
+                    <tr>
+                        <td style="background: linear-gradient(135deg, #1E1B4B 0%, #312E81 100%); padding: 24px 28px; text-align: left;">
+                            <table role="presentation" width="100%">
+                                <tr>
+                                    <td>
+                                        <div style="display: inline-block; background-color: #4F46E5; border-radius: 8px; padding: 6px 12px; vertical-align: middle;">
+                                            <span style="color: #FFFFFF; font-weight: 800; font-size: 15px;">PB</span>
+                                        </div>
+                                        <span style="color: #FFFFFF; font-size: 18px; font-weight: 800; vertical-align: middle; margin-left: 10px;">Property Base Authenticator</span>
+                                    </td>
+                                    <td align="right">
+                                        <span style="background-color: rgba(16, 185, 129, 0.2); color: #6EE7B7; border: 1px solid rgba(110, 231, 183, 0.4); font-size: 11px; padding: 4px 10px; border-radius: 20px; font-weight: 700; text-transform: uppercase;">Number Match</span>
+                                    </td>
+                                </tr>
+                            </table>
+                        </td>
+                    </tr>
+                    <!-- Body -->
+                    <tr>
+                        <td style="padding: 30px 28px;">
+                            <h2 style="margin: 0 0 8px 0; color: #0F172A; font-size: 21px; font-weight: 800;">Are you trying to sign in?</h2>
+                            <p style="margin: 0 0 20px 0; color: #475569; font-size: 14px; line-height: 21px;">
+                                A sign-in attempt requires <strong>Contextual Number-Matching Push Verification</strong> for your Property Base account (<strong>{to_email}</strong>). Review the login context below:
+                            </p>
+
+                            <!-- Contextual Telemetry Box -->
+                            <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; margin-bottom: 24px;">
+                                <tr>
+                                    <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0;">
+                                        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748B; letter-spacing: 0.5px;">Login Location</div>
+                                        <div style="font-size: 15px; font-weight: 800; color: #0F172A; margin-top: 3px;">&#128205; {location}</div>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0;">
+                                        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748B; letter-spacing: 0.5px;">Device &amp; Browser</div>
+                                        <div style="font-size: 15px; font-weight: 800; color: #0F172A; margin-top: 3px;">&#128187; {device_info}</div>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 14px 18px; border-bottom: 1px solid #E2E8F0;">
+                                        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748B; letter-spacing: 0.5px;">IP Address</div>
+                                        <div style="font-size: 15px; font-weight: 800; color: #4F46E5; font-family: monospace; margin-top: 3px;">&#127760; {ip_address}</div>
+                                    </td>
+                                </tr>
+                                <tr>
+                                    <td style="padding: 14px 18px;">
+                                        <div style="font-size: 11px; font-weight: 700; text-transform: uppercase; color: #64748B; letter-spacing: 0.5px;">Time of Attempt</div>
+                                        <div style="font-size: 13px; font-weight: 600; color: #334155; margin-top: 3px;">&#128338; {timestamp_str}</div>
+                                    </td>
+                                </tr>
+                            </table>
+
+                            <!-- 3-Number Tap Selection Box -->
+                            <div style="background-color: #EEF2FF; border: 2px solid #6366F1; border-radius: 14px; padding: 22px 16px; text-align: center; margin-bottom: 22px;">
+                                <div style="font-size: 13px; font-weight: 800; color: #312E81; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;">
+                                    Tap the Matching Number to Approve Sign-In
+                                </div>
+                                <p style="margin: 0 0 18px 0; font-size: 13.5px; color: #4338CA; line-height: 20px;">
+                                    Press the <strong>2-digit number</strong> below that matches the number shown on your Property Base login screen:
+                                </p>
+
+                                <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="margin: 0 auto;">
+                                    <tr>
+                                        {buttons_td_html}
+                                    </tr>
+                                </table>
+                            </div>
+
+                            <!-- Deny / Report ATO Button -->
+                            <div style="text-align: center;">
+                                <a
+                                    href="{deny_url}"
+                                    style="display: inline-block; background-color: #FEF2F2; color: #DC2626; border: 1px solid #FECACA; text-decoration: none; font-size: 13px; font-weight: 700; padding: 11px 18px; border-radius: 8px;"
+                                >
+                                    No, It Wasn't Me — Deny Sign-In &amp; Report ATO
+                                </a>
+                            </div>
+                        </td>
+                    </tr>
+                    <!-- Footer -->
+                    <tr>
+                        <td style="background-color: #F8FAFC; border-top: 1px solid #E2E8F0; padding: 18px 28px; text-align: center;">
+                            <p style="margin: 0 0 4px 0; font-size: 12px; color: #64748B;">
+                                Never tap a number if you are not actively signing in to Property Base right now.
+                            </p>
+                            <p style="margin: 0; font-size: 11px; color: #94A3B8;">&copy; {datetime.now(timezone.utc).year} Property Base Zero-Trust Security.</p>
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>"""
+
+
 class SimulatedMailbox:
     """
     Unified Email Service for Property Base (IR-04 & SMTP).
@@ -140,20 +279,22 @@ class SimulatedMailbox:
                 msg.attach(MIMEText(body_html, "html", "utf-8"))
 
             if use_ssl:
-                with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=12) as server:
+                with smtplib.SMTP_SSL(smtp_host, smtp_port, timeout=15) as server:
                     server.login(smtp_user, smtp_password)
                     server.send_message(msg)
             else:
-                with smtplib.SMTP(smtp_host, smtp_port, timeout=12) as server:
+                with smtplib.SMTP(smtp_host, smtp_port, timeout=15) as server:
+                    server.ehlo()
                     if use_tls:
                         server.starttls()
+                        server.ehlo()
                     server.login(smtp_user, smtp_password)
                     server.send_message(msg)
 
-            logger.info(f"✅ [SMTP SUCCESS] Successfully sent email to {to_email} via {smtp_host}:{smtp_port}")
+            logger.info(f"[SMTP SUCCESS] Successfully sent email to {to_email} via {smtp_host}:{smtp_port}")
             return True
         except Exception as e:
-            logger.error(f"❌ [SMTP ERROR] Failed to send email via SMTP to {to_email}: {e}")
+            logger.error(f"[SMTP ERROR] Failed to send email via SMTP to {to_email}: {e}")
             return False
 
     @classmethod
@@ -170,14 +311,25 @@ class SimulatedMailbox:
         otp_code = payload.get("otp_code")
 
         # Prepare rich HTML body
-        heading = "Verification Code" if otp_code else subject
-        body_intro = body_text.split(".")[0] + "." if "." in body_text else body_text
-        body_html = build_email_html(
-            subject=subject,
-            heading=heading,
-            body_intro=body_text,
-            code=otp_code,
-        )
+        if category == "MFA_CONTEXTUAL_PUSH":
+            body_html = build_contextual_push_email_html(
+                subject=subject,
+                to_email=to_email,
+                location=payload.get("location", "Nairobi, Kenya (EAT)"),
+                device_info=payload.get("device_info", "Windows • Chrome Browser"),
+                ip_address=payload.get("ip_address", "127.0.0.1"),
+                timestamp_str=payload.get("timestamp", datetime.now(timezone.utc).strftime("%b %d, %Y %H:%M UTC")),
+                number_options=payload.get("number_options", []),
+                deny_url=payload.get("deny_url", "http://localhost:8000"),
+            )
+        else:
+            heading = "Verification Code" if otp_code else subject
+            body_html = build_email_html(
+                subject=subject,
+                heading=heading,
+                body_intro=body_text,
+                code=otp_code,
+            )
 
         # Attempt real SMTP transmission
         smtp_success = cls.send_smtp(
@@ -200,11 +352,16 @@ class SimulatedMailbox:
         cls._inbox.insert(0, email_record)
         cls._inbox = cls._inbox[:50]
 
-        # Always log prominent notification with OTP code in server terminal for transparency
-        if otp_code:
-            logger.info(f"🔑 [SECURITY CODE DISPATCH] To: {to_email} | CODE: [{otp_code}] | SMTP Sent: {smtp_success}")
+        # Always log prominent notification in server terminal for transparency
+        if category == "MFA_CONTEXTUAL_PUSH":
+            logger.info(
+                f"[CONTEXTUAL PUSH DISPATCH] To: {to_email} | Match Number: [{payload.get('expected_number')}] "
+                f"| Location: {payload.get('location')} | IP: {payload.get('ip_address')} | SMTP Sent: {smtp_success}"
+            )
+        elif otp_code:
+            logger.info(f"[SECURITY CODE DISPATCH] To: {to_email} | CODE: [{otp_code}] | SMTP Sent: {smtp_success}")
         else:
-            logger.info(f"📧 [EMAIL DISPATCH] To: {to_email} | Subject: {subject} | SMTP Sent: {smtp_success}")
+            logger.info(f"[EMAIL DISPATCH] To: {to_email} | Subject: {subject} | SMTP Sent: {smtp_success}")
 
         return email_record
 
