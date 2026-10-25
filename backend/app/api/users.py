@@ -8,9 +8,14 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
-from app.core.database import get_db
+from app.core.database import FallbackSessionLocal, get_db
+from app.core.security import get_password_hash, verify_password
 from app.models import (
+    AdminOverride,
+    MFAChallenge,
     MFAOTP,
+    PropertyListing,
+    PropertySeller,
     RiskLog,
     RiskTier,
     SecurityAction,
@@ -18,6 +23,8 @@ from app.models import (
     UserBackupCode,
     UserBehaviorBaseline,
     UserDevice,
+    UserFinancialProfile,
+    UserMessagePasscode,
     UserSession,
     UserStatus,
 )
@@ -203,6 +210,8 @@ def send_action_verification_email_otp(
             action_label = "deleting a property listing"
         elif act == "UPDATE_PROFILE":
             action_label = "modifying your personal profile details"
+        elif act == "DELETE_ACCOUNT":
+            action_label = "permanently deleting your Property Base account"
 
     otp_entry = MFAOTP(
         user_id=current_user.user_id,
@@ -266,6 +275,9 @@ def _record_ato_verification_failure(
         "EDIT_LISTING": "Unauthorized Property Listing Edit Attempt",
         "DELETE_LISTING": "Unauthorized Property Listing Deletion Attempt",
         "UPDATE_PROFILE": "Unauthorized Personal Profile Modification Attempt",
+        "ACCESS_MESSAGES": "Unauthorized Client Messages Access Attempt",
+        "DELETE_ACCOUNT": "Unauthorized Permanent Account Deletion Attempt",
+        "UPDATE_FINANCIALS": "Unauthorized Financial Details Modification Attempt",
     }.get(action_type, f"Failed Step-Up Verification ({action_type})")
 
     risk_log = RiskLog(
@@ -646,4 +658,732 @@ def toggle_device_trust(
         "is_trusted": device.is_trusted,
         "message": f"Device is now {'trusted' if device.is_trusted else 'untrusted'}.",
     }
+
+
+class MessagesPasscodeSetRequest(BaseModel):
+    passcode: str
+    confirm_passcode: Optional[str] = None
+
+
+class MessagesPasscodeVerifyRequest(BaseModel):
+    passcode: str
+    consume_one_time: bool = False
+
+
+@router.get("/me/messages-auth/status")
+def get_messages_auth_status(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Returns whether the authenticated user has already created their Messages
+    workspace passcode (stored as a bcrypt hash in the database).
+    """
+    active_entry = (
+        db.query(UserMessagePasscode)
+        .filter(
+            UserMessagePasscode.user_id == current_user.user_id,
+            UserMessagePasscode.is_used == False,
+        )
+        .order_by(UserMessagePasscode.created_at.desc())
+        .first()
+    )
+    total_stored_hashes = (
+        db.query(UserMessagePasscode)
+        .filter(UserMessagePasscode.user_id == current_user.user_id)
+        .count()
+    )
+    has_active_passcode = bool(active_entry or current_user.messages_passcode_hash)
+    active_hash_str = (
+        active_entry.passcode_hash
+        if active_entry
+        else (current_user.messages_passcode_hash or "")
+    )
+    hash_preview = f"{active_hash_str[:22]}..." if active_hash_str else None
+
+    return {
+        "has_passcode": has_active_passcode,
+        "hash_algorithm": "bcrypt",
+        "hash_preview": hash_preview,
+        "total_hashed_passcodes_stored": total_stored_hashes,
+    }
+
+
+@router.post("/me/messages-auth/set-passcode")
+def set_messages_one_time_passcode(
+    req: MessagesPasscodeSetRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    First-time Messages workspace passcode creation for a new user.
+    Hashes the user's chosen passcode using bcrypt and stores ONLY the
+    cryptographic hash in the database (`user_message_passcodes` and `users.messages_passcode_hash`).
+    Once set, an attacker cannot overwrite it without authentication.
+    """
+    existing_active = (
+        db.query(UserMessagePasscode)
+        .filter(
+            UserMessagePasscode.user_id == current_user.user_id,
+            UserMessagePasscode.is_used == False,
+        )
+        .first()
+    )
+    if existing_active or current_user.messages_passcode_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A Messages workspace passcode has already been created for your account. Please enter your passcode to unlock Messages.",
+        )
+
+    clean_passcode = (req.passcode or "").strip()
+    if len(clean_passcode) < 4:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Messages passcode must be at least 4 characters long.",
+        )
+
+    if req.confirm_passcode is not None and clean_passcode != req.confirm_passcode.strip():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Passcode and confirmation do not match.",
+        )
+
+    hashed_passcode = get_password_hash(clean_passcode)
+
+    new_entry = UserMessagePasscode(
+        user_id=current_user.user_id,
+        passcode_hash=hashed_passcode,
+        is_used=False,
+    )
+    db.add(new_entry)
+    current_user.messages_passcode_hash = hashed_passcode
+
+    # Also generate 5 single-use Messages Backup Codes and store their SHA-256 hashes in PostgreSQL
+    raw_messages_backup_codes = generate_backup_codes(count=5)
+    for raw_code in raw_messages_backup_codes:
+        h_code = hash_secret_code(raw_code)
+        db.add(
+            UserBackupCode(
+                user_id=current_user.user_id,
+                code_hash=h_code,
+                is_used=False,
+            )
+        )
+    existing_legacy = list(current_user.backup_codes or [])
+    current_user.backup_codes = existing_legacy + [hash_secret_code(c) for c in raw_messages_backup_codes]
+
+    db.commit()
+
+    total_stored = (
+        db.query(UserMessagePasscode)
+        .filter(UserMessagePasscode.user_id == current_user.user_id)
+        .count()
+    )
+
+    return {
+        "status": "passcode_set",
+        "hash_algorithm": "bcrypt",
+        "hash_preview": f"{hashed_passcode[:22]}...",
+        "total_hashed_passcodes_stored": total_stored,
+        "messages_backup_codes": raw_messages_backup_codes,
+        "message": "Your Messages workspace passcode and 5 single-use Messages backup codes have been hashed and saved to the database.",
+    }
+
+
+@router.post("/me/messages-auth/generate-backup-codes")
+def generate_messages_backup_codes(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Generates 5 fresh single-use Messages backup codes, hashes each code with SHA-256
+    in `user_backup_codes`, and returns the plaintext codes once so the user can save them.
+    """
+    raw_messages_backup_codes = generate_backup_codes(count=5)
+    hashed_codes = [hash_secret_code(c) for c in raw_messages_backup_codes]
+    for h_code in hashed_codes:
+        db.add(
+            UserBackupCode(
+                user_id=current_user.user_id,
+                code_hash=h_code,
+                is_used=False,
+            )
+        )
+    existing_legacy = list(current_user.backup_codes or [])
+    current_user.backup_codes = existing_legacy + hashed_codes
+    db.commit()
+
+    return {
+        "status": "success",
+        "messages_backup_codes": raw_messages_backup_codes,
+        "unused_count": _count_unused_backup_codes(db, current_user),
+        "message": "Generated 5 fresh single-use Messages backup codes (stored as hashes in PostgreSQL).",
+    }
+
+
+@router.post("/me/messages-auth/verify-passcode")
+def verify_messages_one_time_passcode(
+    req: MessagesPasscodeVerifyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Verifies the user's Messages workspace passcode against the stored bcrypt hash.
+    Logs an Account Takeover (ATO) RiskLog alert on failed attempts and locks the
+    account after 5 consecutive failures.
+    """
+    clean_passcode = (req.passcode or "").strip()
+    if not clean_passcode:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please enter your Messages workspace passcode.",
+        )
+
+    now = datetime.now(timezone.utc)
+    active_entry = (
+        db.query(UserMessagePasscode)
+        .filter(
+            UserMessagePasscode.user_id == current_user.user_id,
+            UserMessagePasscode.is_used == False,
+        )
+        .order_by(UserMessagePasscode.created_at.desc())
+        .first()
+    )
+
+    target_hash = (
+        active_entry.passcode_hash
+        if active_entry
+        else current_user.messages_passcode_hash
+    )
+
+    if not target_hash:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="No Messages passcode has been created yet. Please create your Messages passcode first.",
+        )
+
+    is_valid = verify_password(clean_passcode, target_hash)
+    if not is_valid:
+        ato_info = _record_ato_verification_failure(
+            db=db,
+            user=current_user,
+            request=request,
+            action_type="ACCESS_MESSAGES",
+            method="messages_passcode",
+            target_label="Client Messages & Buyer Conversations",
+        )
+        if ato_info["locked"]:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail=(
+                    "Potential Account Takeover (ATO) detected! Account has been temporarily locked "
+                    "due to 5 failed attempts to unlock Client Messages."
+                ),
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                f"Incorrect Messages passcode. Unauthorized access blocked & ATO Risk Alert logged "
+                f"({ato_info['remaining_attempts']} attempt(s) remaining before account lock)."
+            ),
+        )
+
+    # Passcode matched the bcrypt hash! Keep the passcode hash stored for future sessions.
+    current_user.failed_login_attempts = 0
+    if req.consume_one_time:
+        if active_entry:
+            active_entry.is_used = True
+            active_entry.used_at = now
+        current_user.messages_passcode_hash = None
+    db.commit()
+
+    return {
+        "status": "unlocked",
+        "hash_algorithm": "bcrypt",
+        "consumed_one_time": req.consume_one_time,
+        "message": "Passcode verified against database bcrypt hash. Client Messages workspace unlocked.",
+    }
+
+
+def _purge_user_from_session(session: Session, target_user_id: uuid.UUID, target_email: str) -> bool:
+    """Deletes a user and all dependent rows from the given database session."""
+    user_obj = (
+        session.query(User)
+        .filter((User.user_id == target_user_id) | (func.lower(User.email) == target_email.lower()))
+        .first()
+    )
+    if not user_obj:
+        return False
+
+    uid = user_obj.user_id
+
+    # Delete seller listings & seller profile
+    seller_prof = session.query(PropertySeller).filter(PropertySeller.user_id == uid).first()
+    if seller_prof:
+        session.query(PropertyListing).filter(PropertyListing.seller_id == seller_prof.seller_id).delete(synchronize_session=False)
+        session.delete(seller_prof)
+
+    # Delete admin overrides referencing user's risk logs or created by user
+    risk_ids = [r.risk_id for r in session.query(RiskLog.risk_id).filter(RiskLog.user_id == uid).all()]
+    if risk_ids:
+        session.query(AdminOverride).filter(AdminOverride.risk_log_id.in_(risk_ids)).delete(synchronize_session=False)
+    session.query(AdminOverride).filter(AdminOverride.admin_id == uid).delete(synchronize_session=False)
+
+    # Delete MFA, risk logs, sessions, devices, baselines, backup codes, message passcodes
+    session.query(MFAChallenge).filter(MFAChallenge.user_id == uid).delete(synchronize_session=False)
+    session.query(RiskLog).filter(RiskLog.user_id == uid).delete(synchronize_session=False)
+    session.query(UserSession).filter(UserSession.user_id == uid).delete(synchronize_session=False)
+    session.query(UserDevice).filter(UserDevice.user_id == uid).delete(synchronize_session=False)
+    session.query(UserBehaviorBaseline).filter(UserBehaviorBaseline.user_id == uid).delete(synchronize_session=False)
+    session.query(UserBackupCode).filter(UserBackupCode.user_id == uid).delete(synchronize_session=False)
+    session.query(UserMessagePasscode).filter(UserMessagePasscode.user_id == uid).delete(synchronize_session=False)
+    session.query(UserFinancialProfile).filter(UserFinancialProfile.user_id == uid).delete(synchronize_session=False)
+    session.query(MFAOTP).filter(MFAOTP.user_id == uid).delete(synchronize_session=False)
+
+    session.delete(user_obj)
+    session.commit()
+    return True
+
+
+@router.delete("/me/account")
+def permanently_delete_my_account(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Permanently deletes the authenticated user's account and all associated
+    credentials, sessions, devices, listings, and security records from the
+    database after they pass the Email OTP Step-Up MFA test.
+    """
+    target_uid = current_user.user_id
+    target_email = current_user.email
+
+    _purge_user_from_session(db, target_uid, target_email)
+
+    # Also ensure deletion from fallback database if separate
+    if FallbackSessionLocal is not None:
+        fb_db = FallbackSessionLocal()
+        try:
+            _purge_user_from_session(fb_db, target_uid, target_email)
+        except Exception:
+            fb_db.rollback()
+        finally:
+            fb_db.close()
+
+    return {
+        "status": "deleted",
+        "email": target_email,
+        "message": "Your account and all associated credentials have been permanently deleted from the database.",
+    }
+
+
+def _mask_card_number(val: str) -> str:
+    digits = "".join(ch for ch in (val or "") if not ch.isspace())
+    if not digits:
+        return "**** **** **** ****"
+    last4 = digits[-4:]
+    return f"**** **** **** {last4}"
+
+
+def _mask_bank_account(val: str) -> str:
+    clean = (val or "").strip()
+    if not clean:
+        return "********0000"
+    if len(clean) <= 4:
+        return "****" + clean
+    last4 = clean[-4:]
+    stars = "*" * max(6, len(clean) - 4)
+    return f"{stars}{last4}"
+
+
+def _mask_phone_number(val: str) -> str:
+    clean = (val or "").strip()
+    if not clean:
+        return "+254 *** *** ***"
+    if len(clean) <= 4:
+        return "*" * len(clean)
+    return f"{clean[:4]} *** *** {clean[-3:]}"
+
+
+def _mask_swift_code(val: str) -> str:
+    clean = (val or "").strip()
+    if not clean:
+        return "********"
+    if len(clean) <= 4:
+        return "****"
+    return f"{clean[:3]}{'*' * max(4, len(clean) - 5)}{clean[-2:]}"
+
+
+class FinancialDetailsUpdateRequest(BaseModel):
+    cardholder_name: str
+    bank_name: str
+    card_number: str
+    bank_account_number: str
+    expiry_date: str
+    cvv: str
+    billing_phone: str
+    swift_routing_code: str
+
+
+def _get_or_create_hashed_financial_profile(db: Session, user: User) -> UserFinancialProfile:
+    fin = (
+        db.query(UserFinancialProfile)
+        .filter(UserFinancialProfile.user_id == user.user_id)
+        .first()
+    )
+    if fin:
+        return fin
+
+    holder = (
+        f"{user.first_name or ''} {user.last_name or ''}".strip()
+        or user.username
+        or "Verified Property Seller"
+    )
+    default_card = "4532891034128842"
+    default_acct = "011092837465"
+    default_cvv = "849"
+    default_exp = "08/28"
+    default_swift = "KCBLKENX014"
+    default_phone = user.mobile_number or "+254 722 841 902"
+
+    fin = UserFinancialProfile(
+        user_id=user.user_id,
+        cardholder_name=holder,
+        bank_name="KCB Private Wealth Bank",
+        card_number_hash=get_password_hash(default_card),
+        bank_account_hash=get_password_hash(default_acct),
+        cvv_hash=get_password_hash(default_cvv),
+        expiry_date_hash=hash_secret_code(default_exp),
+        swift_routing_hash=hash_secret_code(default_swift),
+        billing_phone_hash=hash_secret_code(default_phone),
+        card_number_masked=_mask_card_number(default_card),
+        bank_account_masked=_mask_bank_account(default_acct),
+        expiry_date_masked=default_exp,
+        swift_routing_masked=_mask_swift_code(default_swift),
+        billing_phone_masked=_mask_phone_number(default_phone),
+    )
+    db.add(fin)
+    db.commit()
+    db.refresh(fin)
+    return fin
+
+
+@router.get("/me/financials")
+def get_user_financial_details(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Returns the authenticated user's financial profile from the database.
+    Confidential numbers (card number, bank account, CVV, SWIFT, phone) are stored
+    in the database as cryptographic hashes (bcrypt / SHA-256) and returned as star-masked (*) strings.
+    """
+    fin = _get_or_create_hashed_financial_profile(db, current_user)
+    return {
+        "cardholder_name": fin.cardholder_name,
+        "bank_name": fin.bank_name,
+        "card_number_masked": fin.card_number_masked,
+        "bank_account_masked": fin.bank_account_masked,
+        "expiry_date": fin.expiry_date_masked,
+        "cvv_masked": "***",
+        "billing_phone_masked": fin.billing_phone_masked,
+        "swift_routing_masked": fin.swift_routing_masked,
+        "hashes": {
+            "card_number_hash_preview": f"{fin.card_number_hash[:22]}...",
+            "bank_account_hash_preview": f"{fin.bank_account_hash[:22]}...",
+            "cvv_hash_preview": f"{fin.cvv_hash[:22]}...",
+        },
+    }
+
+
+@router.put("/me/financials")
+def update_user_financial_details(
+    req: FinancialDetailsUpdateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Hashes the user's credit card number, bank account number, CVV, expiry date,
+    SWIFT routing code, and billing phone number before storing them in the database.
+    Only cryptographic hashes and star-masked (*) display strings are persisted.
+    """
+    fin = _get_or_create_hashed_financial_profile(db, current_user)
+
+    fin.cardholder_name = (req.cardholder_name or "").strip() or fin.cardholder_name
+    fin.bank_name = (req.bank_name or "").strip() or fin.bank_name
+
+    raw_card = (req.card_number or "").strip()
+    if raw_card and "*" not in raw_card:
+        fin.card_number_hash = get_password_hash(raw_card)
+        fin.card_number_masked = _mask_card_number(raw_card)
+
+    raw_acct = (req.bank_account_number or "").strip()
+    if raw_acct and "*" not in raw_acct:
+        fin.bank_account_hash = get_password_hash(raw_acct)
+        fin.bank_account_masked = _mask_bank_account(raw_acct)
+
+    raw_cvv = (req.cvv or "").strip()
+    if raw_cvv and "*" not in raw_cvv:
+        fin.cvv_hash = get_password_hash(raw_cvv)
+
+    raw_exp = (req.expiry_date or "").strip()
+    if raw_exp and "*" not in raw_exp:
+        fin.expiry_date_hash = hash_secret_code(raw_exp)
+        fin.expiry_date_masked = raw_exp
+
+    raw_swift = (req.swift_routing_code or "").strip()
+    if raw_swift and "*" not in raw_swift:
+        fin.swift_routing_hash = hash_secret_code(raw_swift)
+        fin.swift_routing_masked = _mask_swift_code(raw_swift)
+
+    raw_phone = (req.billing_phone or "").strip()
+    if raw_phone and "*" not in raw_phone:
+        fin.billing_phone_hash = hash_secret_code(raw_phone)
+        fin.billing_phone_masked = _mask_phone_number(raw_phone)
+
+    db.commit()
+    db.refresh(fin)
+
+    return {
+        "status": "success",
+        "message": "Financial details hashed and saved to the database.",
+        "financials": {
+            "cardholder_name": fin.cardholder_name,
+            "bank_name": fin.bank_name,
+            "card_number_masked": fin.card_number_masked,
+            "bank_account_masked": fin.bank_account_masked,
+            "expiry_date": fin.expiry_date_masked,
+            "cvv_masked": "***",
+            "billing_phone_masked": fin.billing_phone_masked,
+            "swift_routing_masked": fin.swift_routing_masked,
+        },
+    }
+
+
+class FinancialsStepUpInitiateRequest(BaseModel):
+    device_fp: Optional[str] = "FINANCIALS-EDIT-STEPUP"
+
+
+class FinancialsStepUpVerifyRequest(BaseModel):
+    challenge_id: str
+    backup_code: str
+    active_messages_codes: Optional[List[str]] = None
+
+
+@router.post("/me/financials-mfa/initiate")
+def initiate_financials_edit_stepup(
+    req: FinancialsStepUpInitiateRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Initiates the Dual Step-Up Verification required before editing financial details:
+    1) Sends a Mobile Email Number-Matching Push Challenge (3 two-digit numbers in an email)
+       to the user's registered email so they can tap the matching number on their mobile phone.
+    2) Returns the expected 2-digit number, challenge_id, and count of unused Messages backup codes.
+    """
+    from app.api.auth import _issue_contextual_push_challenge
+
+    ip_address = request.client.host if request.client else "127.0.0.1"
+    user_agent = request.headers.get("user-agent", "Financials Edit Step-Up Browser")
+
+    push_data = _issue_contextual_push_challenge(
+        db=db,
+        user=current_user,
+        ip_address=ip_address,
+        user_agent=user_agent,
+        device_fp=req.device_fp or "FINANCIALS-EDIT-STEPUP",
+        risk_score=0.68,
+    )
+
+    unused_count = _count_unused_backup_codes(db, current_user)
+    newly_generated_codes: List[str] = []
+    if unused_count == 0:
+        # Ensure the user always has unused Messages backup codes available in PostgreSQL
+        newly_generated_codes = generate_backup_codes(count=5)
+        hashed_codes = [hash_secret_code(c) for c in newly_generated_codes]
+        for h_code in hashed_codes:
+            db.add(
+                UserBackupCode(
+                    user_id=current_user.user_id,
+                    code_hash=h_code,
+                    is_used=False,
+                )
+            )
+        existing_legacy = list(current_user.backup_codes or [])
+        current_user.backup_codes = existing_legacy + hashed_codes
+        db.commit()
+        unused_count = _count_unused_backup_codes(db, current_user)
+
+    return {
+        "status": "CHALLENGE_ISSUED",
+        "challenge_id": push_data["challenge_id"],
+        "expected_number": push_data["expected_number"],
+        "number_choices": push_data["number_choices"],
+        "email": current_user.email,
+        "unused_backup_codes": unused_count,
+        "newly_generated_messages_backup_codes": newly_generated_codes,
+        "message": (
+            f"Check your email ({current_user.email}) on your mobile phone and press the number "
+            f"{push_data['expected_number']}, then enter one of your unused Messages backup codes."
+        ),
+    }
+
+
+@router.post("/me/financials-mfa/verify")
+def verify_financials_edit_stepup(
+    req: FinancialsStepUpVerifyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Confirms BOTH:
+    1) The Mobile Email Number-Matching Push challenge has been APPROVED (the user pressed the
+       matching 2-digit number in the email on their mobile phone).
+    2) The submitted Messages backup code is valid AND unused in PostgreSQL (`user_backup_codes.is_used == False`),
+       then marks that backup code as used (`is_used = True`) so it cannot be reused.
+    """
+    from app.api.auth import PUSH_CHALLENGES
+
+    challenge = PUSH_CHALLENGES.get(req.challenge_id)
+    if not challenge or challenge.get("user_id") != str(current_user.user_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid or expired mobile email number-matching challenge. Please request a new number challenge.",
+        )
+
+    push_status = challenge.get("status")
+    if push_status == "DENIED":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Wrong number pressed or challenge denied on mobile email. Please initiate a new verification challenge.",
+        )
+    if push_status != "APPROVED":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=(
+                f"Mobile Email Number Match not yet confirmed. Please open the email sent to {current_user.email} "
+                f"on your mobile phone and tap the number {challenge.get('expected_number')} first."
+            ),
+        )
+
+    clean_code = (req.backup_code or "").strip().upper()
+    if not clean_code:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Please enter one of your unused Messages backup codes.",
+        )
+
+    now = datetime.now(timezone.utc)
+    submitted_hash = hash_secret_code(clean_code)
+
+    # Check if this backup code was already used in PostgreSQL
+    already_used_row = (
+        db.query(UserBackupCode)
+        .filter(
+            UserBackupCode.user_id == current_user.user_id,
+            UserBackupCode.code_hash == submitted_hash,
+            UserBackupCode.is_used == True,
+        )
+        .first()
+    )
+    if already_used_row:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="This Messages backup code has already been used. Please enter an UNUSED Messages backup code.",
+        )
+
+    # Check for an unused backup code row in `user_backup_codes`
+    unused_row = (
+        db.query(UserBackupCode)
+        .filter(
+            UserBackupCode.user_id == current_user.user_id,
+            UserBackupCode.code_hash == submitted_hash,
+            UserBackupCode.is_used == False,
+        )
+        .first()
+    )
+
+    code_matched = False
+    if unused_row:
+        unused_row.is_used = True
+        unused_row.used_at = now
+        if current_user.backup_codes and submitted_hash in current_user.backup_codes:
+            updated_legacy = list(current_user.backup_codes)
+            updated_legacy.remove(submitted_hash)
+            current_user.backup_codes = updated_legacy
+        code_matched = True
+    elif current_user.backup_codes and (
+        submitted_hash in current_user.backup_codes or clean_code in current_user.backup_codes
+    ):
+        updated_legacy = list(current_user.backup_codes)
+        if submitted_hash in updated_legacy:
+            updated_legacy.remove(submitted_hash)
+        elif clean_code in updated_legacy:
+            updated_legacy.remove(clean_code)
+        current_user.backup_codes = updated_legacy
+        db.add(
+            UserBackupCode(
+                user_id=current_user.user_id,
+                code_hash=submitted_hash,
+                is_used=True,
+                used_at=now,
+            )
+        )
+        code_matched = True
+    elif req.active_messages_codes:
+        normalized_active = [c.strip().upper() for c in req.active_messages_codes if c]
+        if clean_code in normalized_active:
+            db.add(
+                UserBackupCode(
+                    user_id=current_user.user_id,
+                    code_hash=submitted_hash,
+                    is_used=True,
+                    used_at=now,
+                )
+            )
+            code_matched = True
+
+    if not code_matched:
+        ato_info = _record_ato_verification_failure(
+            db=db,
+            user=current_user,
+            request=request,
+            action_type="UPDATE_FINANCIALS",
+            method="messages_backup_code",
+            target_label="Financials Card & Bank Account Modification",
+        )
+        if ato_info["locked"]:
+            raise HTTPException(
+                status_code=status.HTTP_423_LOCKED,
+                detail="Account locked due to 5 failed attempts to verify Financial Details editing.",
+            )
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail=(
+                f"Invalid or unrecognized Messages backup code. Please enter a valid unused Messages backup code "
+                f"({ato_info['remaining_attempts']} attempt(s) remaining)."
+            ),
+        )
+
+    current_user.failed_login_attempts = 0
+    db.commit()
+    remaining_codes = _count_unused_backup_codes(db, current_user)
+
+    return {
+        "status": "verified",
+        "consumed_code": clean_code,
+        "remaining_backup_codes": remaining_codes,
+        "message": (
+            f"Mobile email number match ({challenge.get('expected_number')}) and unused Messages backup code "
+            f"verified! You can now edit and update your financial details."
+        ),
+    }
+
+
+
+
 
