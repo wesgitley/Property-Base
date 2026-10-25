@@ -3,14 +3,19 @@ import json
 import logging
 import os
 import secrets
+import subprocess
+import threading
 import time
+import urllib.parse
 import urllib.request
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 import re
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
+from fastapi.responses import HTMLResponse, Response
+from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -303,55 +308,681 @@ def login(request: Request, login_in: Dict[str, Any], db: Session = Depends(get_
     # Step 1 Response: Generate temporary mfa_pre_auth_token (5-minute expiration)
     pre_auth_token = create_pre_auth_token(user.user_id, user.email, expires_minutes=5)
 
-    # Check remaining unused backup codes
-    unused_codes_count = (
-        db.query(UserBackupCode)
-        .filter(UserBackupCode.user_id == user.user_id, UserBackupCode.is_used == False)
-        .count()
+    # Create Contextual Number-Matching Push Challenge (2-digit random number, e.g., 48)
+    location_label = login_in.get("location_label") or "Nairobi, Kenya (EAT)"
+    push_info = _issue_contextual_push_challenge(
+        user=user,
+        client_ip=client_ip,
+        user_agent=user_agent,
+        raw_device_hash=raw_device_hash,
+        device_name=device_name,
+        location_label=location_label,
     )
-
-    backup_codes_depleted = (unused_codes_count == 0)
-    # If exhausted, automatically dispatch a 6-digit one-time code to their email so they can log in
-    if backup_codes_depleted:
-        otp_code = generate_otp_code(6)
-        hashed_otp = hash_secret_code(otp_code)
-        otp_entry = MFAOTP(
-            user_id=user.user_id,
-            otp_code_hash=hashed_otp,
-            attempts=0,
-            is_used=False,
-            expires_at=now + timedelta(minutes=10),
-        )
-        db.add(otp_entry)
-        db.commit()
-
-        SimulatedMailbox.send_email(
-            to_email=user.email,
-            subject="Property Base - One-Time Login Code (Backup Codes Exhausted)",
-            body_text=(
-                f"All your backup codes have been used. Use this one-time verification code "
-                f"to sign in: {otp_code}. Upon login, a fresh set of 8 backup codes will be generated for you."
-            ),
-            category="MFA_OTP",
-            payload_data={"otp_code": otp_code, "depleted_recovery": True},
-        )
 
     return {
         "mfa_required": True,
+        "mfa_method": "contextual_push",
         "mfa_pre_auth_token": pre_auth_token,
+        "push_challenge_id": push_info["challenge_id"],
+        "push_number": push_info["expected_number"],
+        "push_context": {
+            "location": push_info["location"],
+            "device": push_info["device_info"],
+            "ip_address": push_info["ip_address"],
+            "timestamp": push_info["timestamp"],
+        },
+        "push_approval_url": push_info["approval_page_url"],
+        "smtp_sent": push_info["smtp_sent"],
         "message": (
-            "Backup codes exhausted. A one-time verification code has been dispatched to your email."
-            if backup_codes_depleted
-            else "Credentials verified. MFA verification required."
+            f"Contextual Push Notification sent to {user.email}. "
+            f"Open the notification in your Gmail and type the 2-digit number displayed on screen to approve access."
         ),
         "user_id": str(user.user_id),
         "email": user.email,
         "first_name": user.first_name,
         "last_name": user.last_name,
-        "backup_codes_depleted": backup_codes_depleted,
-        "unused_codes_count": unused_codes_count,
         "mobile_number": user.mobile_number,
         "masked_phone": mask_phone_number(user.mobile_number) if user.mobile_number else None,
+    }
+
+
+# ── CONTEXTUAL NUMBER-MATCHING PUSH MFA STORE & ENDPOINTS ────────────────────
+PUSH_CHALLENGES: Dict[str, Dict[str, Any]] = {}
+
+_TUNNEL_STATE: Dict[str, Any] = {
+    "url": None,
+    "started": False,
+}
+_TUNNEL_LOCK = threading.Lock()
+
+
+def _tunnel_worker() -> None:
+    while True:
+        try:
+            proc = subprocess.Popen(
+                [
+                    "ssh",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "ServerAliveInterval=20",
+                    "-o", "ExitOnForwardFailure=yes",
+                    "-R", "80:127.0.0.1:8000",
+                    "nokey@localhost.run",
+                ],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL,
+                text=True,
+                bufsize=1,
+            )
+            for line in iter(proc.stdout.readline, ""):
+                m = re.search(r"(https://[a-zA-Z0-9.-]+\.lhr\.life)", line)
+                if m:
+                    url = m.group(1).rstrip("/")
+                    _TUNNEL_STATE["url"] = url
+                    logger.info(f"[PUSH TUNNEL READY] Public HTTPS URL for Email Push Buttons: {url}")
+            proc.wait()
+        except Exception as e:
+            logger.warning(f"Public tunnel worker exception: {e}")
+        _TUNNEL_STATE["url"] = None
+        time.sleep(2)
+
+
+def _start_public_tunnel_if_needed() -> None:
+    with _TUNNEL_LOCK:
+        if not _TUNNEL_STATE["started"]:
+            _TUNNEL_STATE["started"] = True
+            t = threading.Thread(target=_tunnel_worker, daemon=True)
+            t.start()
+
+
+def _get_public_backend_base_url() -> str:
+    env_url = os.getenv("BACKEND_BASE_URL", "").strip().rstrip("/")
+    if env_url and "localhost" not in env_url and "127.0.0.1" not in env_url:
+        return env_url
+
+    _start_public_tunnel_if_needed()
+    for _ in range(30):
+        if _TUNNEL_STATE.get("url"):
+            return _TUNNEL_STATE["url"]
+        time.sleep(0.2)
+
+    return env_url or "http://192.168.0.13:8000"
+
+
+# Start tunnel proactively on module import
+_start_public_tunnel_if_needed()
+
+
+def _format_device_from_ua(user_agent: str, device_name: str) -> str:
+    ua = (user_agent or "").lower()
+    os_label = "Desktop OS"
+    if "windows nt 10" in ua:
+        os_label = "Windows 10/11 Desktop"
+    elif "macintosh" in ua or "mac os x" in ua:
+        os_label = "macOS Desktop"
+    elif "android" in ua:
+        os_label = "Android Mobile"
+    elif "iphone" in ua or "ipad" in ua:
+        os_label = "iOS Device"
+    elif "linux" in ua:
+        os_label = "Linux Workstation"
+
+    browser_label = "Web Browser"
+    if "edg/" in ua:
+        browser_label = "Microsoft Edge"
+    elif "chrome/" in ua and "edg/" not in ua:
+        browser_label = "Google Chrome"
+    elif "firefox/" in ua:
+        browser_label = "Mozilla Firefox"
+    elif "safari/" in ua and "chrome/" not in ua:
+        browser_label = "Apple Safari"
+
+    return f"{os_label} • {browser_label}"
+
+
+def _issue_contextual_push_challenge(
+    user: User,
+    client_ip: str,
+    user_agent: str,
+    raw_device_hash: str,
+    device_name: str,
+    location_label: str = "Nairobi, Kenya (EAT)",
+) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    # Generate the target random 2-digit number (10 to 99, e.g. 48)
+    expected_number = f"{secrets.randbelow(90) + 10}"
+    # Generate 2 distinct decoy 2-digit numbers so 3 different numbers are shown in the email
+    choices_set = {expected_number}
+    while len(choices_set) < 3:
+        choices_set.add(f"{secrets.randbelow(90) + 10}")
+    choices_list = list(choices_set)
+    secrets.SystemRandom().shuffle(choices_list)
+
+    challenge_id = secrets.token_urlsafe(16)
+    device_info = _format_device_from_ua(user_agent, device_name)
+    eat_time = now + timedelta(hours=3)
+    timestamp_str = eat_time.strftime("%b %d, %Y at %I:%M:%S %p EAT")
+
+    backend_base = _get_public_backend_base_url()
+    approval_page_url = f"{backend_base}/api/v1/auth/mfa/push-challenge/{challenge_id}"
+    approval_submit_url = f"{backend_base}/api/v1/auth/mfa/push-challenge/{challenge_id}/respond"
+    deny_url = f"{backend_base}/api/v1/auth/mfa/push-challenge/{challenge_id}/respond?action=deny"
+
+    number_options = [
+        {
+            "number": num,
+            "url": f"{approval_submit_url}?action=approve&entered_number={num}",
+        }
+        for num in choices_list
+    ]
+
+    PUSH_CHALLENGES[challenge_id] = {
+        "challenge_id": challenge_id,
+        "user_id": str(user.user_id),
+        "email": user.email,
+        "expected_number": expected_number,
+        "number_choices": choices_list,
+        "location": location_label,
+        "device_info": device_info,
+        "device_name": device_name,
+        "ip_address": client_ip,
+        "user_agent": user_agent,
+        "device_hash": raw_device_hash,
+        "timestamp": timestamp_str,
+        "status": "PENDING",  # PENDING | APPROVED | DENIED | EXPIRED
+        "attempts": 0,
+        "max_attempts": 1,
+        "created_at": now,
+        "expires_at": now + timedelta(minutes=5),
+        "token_payload": None,
+        "error_message": None,
+        "approval_page_url": approval_page_url,
+    }
+
+    dispatch_res = SimulatedMailbox.send_email(
+        to_email=user.email,
+        subject=f"Property Base Security Push — Tap Matching Number ({location_label})",
+        body_text=(
+            f"Contextual Sign-In Push Notification for {user.email}\n"
+            f"Location: {location_label}\n"
+            f"Device: {device_info}\n"
+            f"IP Address: {client_ip}\n"
+            f"Time: {timestamp_str}\n\n"
+            f"Tap the matching 2-digit number from the 3 options ({', '.join(choices_list)}) in this email to approve access."
+        ),
+        category="MFA_CONTEXTUAL_PUSH",
+        payload_data={
+            "challenge_id": challenge_id,
+            "expected_number": expected_number,
+            "number_options": number_options,
+            "location": location_label,
+            "device_info": device_info,
+            "ip_address": client_ip,
+            "timestamp": timestamp_str,
+            "approval_page_url": approval_page_url,
+            "approval_submit_url": approval_submit_url,
+            "deny_url": deny_url,
+        },
+    )
+
+    PUSH_CHALLENGES[challenge_id]["smtp_sent"] = bool(dispatch_res.get("smtp_sent"))
+    return PUSH_CHALLENGES[challenge_id]
+
+
+def _render_push_authenticator_html(
+    challenge: Dict[str, Any],
+    feedback_message: Optional[str] = None,
+    feedback_type: str = "info",
+) -> str:
+    status_val = challenge["status"]
+    challenge_id = challenge["challenge_id"]
+    submit_url = f"/api/v1/auth/mfa/push-challenge/{challenge_id}/respond"
+
+    banner_html = ""
+    if feedback_message:
+        bg = "#ECFDF5" if feedback_type == "success" else ("#FEF2F2" if feedback_type == "error" else "#EEF2FF")
+        border = "#A7F3D0" if feedback_type == "success" else ("#FECACA" if feedback_type == "error" else "#C7D2FE")
+        color = "#047857" if feedback_type == "success" else ("#B91C1C" if feedback_type == "error" else "#3730A3")
+        banner_html = f"""
+        <div style="background-color: {bg}; border: 1px solid {border}; color: {color}; padding: 14px 16px; border-radius: 10px; font-size: 13.5px; font-weight: 700; margin-bottom: 18px; line-height: 1.45;">
+            {feedback_message}
+        </div>
+        """
+
+    if status_val == "APPROVED":
+        action_section = """
+        <div style="background-color: #ECFDF5; border: 2px solid #10B981; border-radius: 14px; padding: 26px 20px; text-align: center;">
+            <div style="font-size: 40px; margin-bottom: 8px;">&#9989;</div>
+            <h3 style="margin: 0 0 8px 0; color: #065F46; font-size: 20px; font-weight: 800;">Sign-In Approved!</h3>
+            <p style="margin: 0; color: #047857; font-size: 14px; line-height: 1.5;">
+                Your 2-digit contextual number matched. Your Property Base web session has been unlocked automatically — you can return to your Property Base browser tab now.
+            </p>
+        </div>
+        """
+    elif status_val in ("DENIED", "EXPIRED"):
+        title_txt = "Sign-In Blocked & Reported" if status_val == "DENIED" else "Push Challenge Expired"
+        action_section = f"""
+        <div style="background-color: #FEF2F2; border: 2px solid #EF4444; border-radius: 14px; padding: 26px 20px; text-align: center;">
+            <div style="font-size: 40px; margin-bottom: 8px;">&#128721;</div>
+            <h3 style="margin: 0 0 8px 0; color: #991B1B; font-size: 20px; font-weight: 800;">{title_txt}</h3>
+            <p style="margin: 0; color: #B91C1C; font-size: 14px; line-height: 1.5;">
+                This sign-in request has been terminated and logged by Property Base Zero-Trust ATO Protection.
+            </p>
+        </div>
+        """
+    else:
+        remaining = max(0, challenge["max_attempts"] - challenge["attempts"])
+        action_section = f"""
+        <form action="{submit_url}" method="POST" style="margin: 0;">
+            <input type="hidden" name="action" value="approve" />
+            <div style="background-color: #EEF2FF; border: 2px solid #4F46E5; border-radius: 14px; padding: 22px 18px; text-align: center; margin-bottom: 16px;">
+                <label style="display: block; font-size: 12px; font-weight: 800; color: #312E81; text-transform: uppercase; letter-spacing: 0.6px; margin-bottom: 8px;">
+                    Type the 2-Digit Number Shown on Your Login Screen
+                </label>
+                <input
+                    type="text"
+                    name="entered_number"
+                    required
+                    autofocus
+                    maxlength="2"
+                    inputmode="numeric"
+                    pattern="[0-9]{{2}}"
+                    placeholder="00"
+                    style="width: 130px; padding: 14px 12px; font-size: 28px; font-weight: 800; text-align: center; letter-spacing: 6px; border: 2px solid #4F46E5; border-radius: 12px; background-color: #FFFFFF; color: #0F172A; font-family: monospace; outline: none; display: block; margin: 0 auto 14px auto;"
+                />
+                <button
+                    type="submit"
+                    style="width: 100%; padding: 14px 20px; background-color: #4F46E5; color: #FFFFFF; border: none; border-radius: 10px; font-size: 15px; font-weight: 800; cursor: pointer; box-shadow: 0 4px 12px rgba(79, 70, 229, 0.3);"
+                >
+                    Verify Number &amp; Approve Access
+                </button>
+                <div style="margin-top: 10px; font-size: 12px; color: #4338CA; font-weight: 600;">
+                    {remaining} number-matching attempt(s) remaining
+                </div>
+            </div>
+        </form>
+        <form action="{submit_url}" method="POST" style="margin: 0;">
+            <input type="hidden" name="action" value="deny" />
+            <button
+                type="submit"
+                style="width: 100%; padding: 12px 16px; background-color: #FEF2F2; color: #DC2626; border: 1px solid #FECACA; border-radius: 10px; font-size: 13px; font-weight: 700; cursor: pointer;"
+            >
+                No, It Wasn't Me — Deny Sign-In &amp; Report Fraud
+            </button>
+        </form>
+        """
+
+    return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Property Base — Contextual Push Approval</title>
+</head>
+<body style="margin: 0; padding: 24px 14px; background-color: #0F172A; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #0F172A; display: flex; justify-content: center; align-items: center; min-height: 90vh;">
+    <div style="width: 100%; max-width: 460px; background-color: #FFFFFF; border-radius: 20px; overflow: hidden; box-shadow: 0 25px 50px -12px rgba(0,0,0,0.5);">
+        <div style="background: linear-gradient(135deg, #1E1B4B 0%, #4F46E5 100%); padding: 22px 24px; color: #FFFFFF; display: flex; justify-content: space-between; align-items: center;">
+            <div>
+                <div style="font-size: 11px; text-transform: uppercase; letter-spacing: 0.8px; color: #C7D2FE; font-weight: 700;">Property Base Authenticator</div>
+                <div style="font-size: 18px; font-weight: 800; margin-top: 2px;">Contextual Push Verification</div>
+            </div>
+            <span style="background-color: rgba(255,255,255,0.16); padding: 5px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;">2-Digit Match</span>
+        </div>
+        <div style="padding: 24px;">
+            {banner_html}
+            <p style="margin: 0 0 16px 0; font-size: 13.5px; color: #475569; line-height: 1.5;">
+                Confirm the contextual telemetry below for <strong>{challenge['email']}</strong> before entering the 2-digit number from your login screen:
+            </p>
+            <div style="background-color: #F8FAFC; border: 1px solid #E2E8F0; border-radius: 12px; padding: 14px 16px; margin-bottom: 20px;">
+                <div style="margin-bottom: 10px;">
+                    <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #64748B;">Login Location</div>
+                    <div style="font-size: 14px; font-weight: 800; color: #0F172A;">&#128205; {challenge['location']}</div>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #64748B;">Device &amp; Browser</div>
+                    <div style="font-size: 14px; font-weight: 800; color: #0F172A;">&#128187; {challenge['device_info']}</div>
+                </div>
+                <div style="margin-bottom: 10px;">
+                    <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #64748B;">IP Address</div>
+                    <div style="font-size: 14px; font-weight: 800; color: #4F46E5; font-family: monospace;">&#127760; {challenge['ip_address']}</div>
+                </div>
+                <div>
+                    <div style="font-size: 10px; font-weight: 700; text-transform: uppercase; color: #64748B;">Timestamp</div>
+                    <div style="font-size: 12.5px; font-weight: 600; color: #334155;">&#128338; {challenge['timestamp']}</div>
+                </div>
+            </div>
+            {action_section}
+        </div>
+    </div>
+</body>
+</html>"""
+
+
+def _finalize_push_approval(db: Session, challenge: Dict[str, Any]) -> None:
+    now = datetime.now(timezone.utc)
+    user = db.query(User).filter(User.user_id == uuid.UUID(challenge["user_id"])).first()
+    if not user:
+        return
+
+    user.failed_login_attempts = 0
+    user.status = UserStatus.ACTIVE
+
+    raw_device_hash = challenge.get("device_hash") or "default_browser_hash"
+    salted_device_hash = hash_secret_code(f"salt_{user.user_id}_{raw_device_hash}")
+    device = (
+        db.query(UserDevice)
+        .filter(UserDevice.user_id == user.user_id, UserDevice.device_hash == salted_device_hash)
+        .first()
+    )
+    if not device:
+        device = UserDevice(
+            user_id=user.user_id,
+            device_hash=salted_device_hash,
+            device_name=challenge.get("device_name") or "Standard Browser",
+            os_platform="Web",
+            browser_engine="Browser",
+            is_trusted=True,
+        )
+        db.add(device)
+        db.commit()
+        db.refresh(device)
+    else:
+        device.last_seen_at = now
+        db.commit()
+
+    session_id = uuid.uuid4()
+    role_str = user.role.value if hasattr(user.role, "value") else str(user.role)
+    access_token, jti = create_access_token(
+        subject=str(user.user_id),
+        session_id=str(session_id),
+        role=role_str,
+    )
+
+    user_session = UserSession(
+        session_id=session_id,
+        user_id=user.user_id,
+        token_jti=hash_secret_code(jti),
+        ip_address=challenge["ip_address"],
+        user_agent=challenge["user_agent"],
+        device_id=device.device_id,
+        status=SessionStatus.ACTIVE,
+        is_revoked=False,
+        expires_at=now + timedelta(minutes=30),
+    )
+    db.add(user_session)
+
+    # Record Low-Risk verified login log
+    risk_log = RiskLog(
+        user_id=user.user_id,
+        session_id=session_id,
+        total_risk_score=0.05,
+        risk_tier=RiskTier.LOW,
+        action_taken=SecurityAction.NO_ACTION,
+        behavior_deviation_score=0.04,
+        context_deviation_score=0.04,
+        device_deviation_score=0.04,
+        feature_contributions={
+            "top_risk_factors": [
+                {
+                    "feature": "contextual_push_number_match",
+                    "display_name": f"Contextual Push Number ({challenge['expected_number']}) Verified via Gmail",
+                    "impact": -0.65,
+                    "direction": "DECREASES_RISK",
+                }
+            ],
+            "stream_contributions": {"behavioral": 0.04, "contextual": 0.04, "device": 0.04},
+        },
+        ip_address=challenge["ip_address"],
+        geolocation={"city": "Nairobi", "country": "KE"},
+    )
+    db.add(risk_log)
+    db.commit()
+
+    user_resp = UserResponse.from_orm(user)
+    challenge["status"] = "APPROVED"
+    challenge["token_payload"] = {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "session_id": str(session_id),
+        "user": json.loads(user_resp.json()),
+    }
+
+
+def _record_push_failure_or_denial(db: Session, challenge: Dict[str, Any], reason: str, is_denied: bool = False) -> None:
+    user = db.query(User).filter(User.user_id == uuid.UUID(challenge["user_id"])).first()
+    if not user:
+        return
+    user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
+    score = 0.88 if is_denied else min(0.92, 0.55 + challenge["attempts"] * 0.12)
+    tier = RiskTier.HIGH if (is_denied or challenge["attempts"] >= 2) else RiskTier.MEDIUM
+    action = SecurityAction.TEMPORARILY_LOCK if is_denied else SecurityAction.STEP_UP_MFA
+
+    risk_log = RiskLog(
+        user_id=user.user_id,
+        session_id=None,
+        total_risk_score=round(score, 3),
+        risk_tier=tier,
+        action_taken=action,
+        behavior_deviation_score=0.65,
+        context_deviation_score=0.78,
+        device_deviation_score=0.45,
+        feature_contributions={
+            "top_risk_factors": [
+                {
+                    "feature": "contextual_push_mfa_anomaly",
+                    "display_name": reason,
+                    "impact": 0.55,
+                    "direction": "INCREASES_RISK",
+                }
+            ],
+            "stream_contributions": {"behavioral": 0.65, "contextual": 0.78, "device": 0.45},
+        },
+        ip_address=challenge["ip_address"],
+        geolocation={"city": "Nairobi", "country": "KE"},
+    )
+    db.add(risk_log)
+    db.commit()
+
+
+@router.get("/mfa/push-challenge/{challenge_id}", response_class=HTMLResponse)
+def view_push_challenge_page(challenge_id: str) -> Any:
+    """
+    Interactive Contextual Number-Matching Push Authenticator page opened from the user's Gmail.
+    Displays login location, device, and IP address, and requires typing the 2-digit number.
+    """
+    challenge = PUSH_CHALLENGES.get(challenge_id)
+    if not challenge:
+        return HTMLResponse(
+            content="<h2 style='font-family:sans-serif;text-align:center;margin-top:60px;'>Push Challenge Not Found or Expired</h2>",
+            status_code=404,
+        )
+    if datetime.now(timezone.utc) > challenge["expires_at"] and challenge["status"] == "PENDING":
+        challenge["status"] = "EXPIRED"
+
+    return HTMLResponse(content=_render_push_authenticator_html(challenge))
+
+
+def _build_quick_push_response(request: Request) -> Response:
+    """
+    Completes the email number-tap request without directing the user to a webpage.
+    - On Desktop / Android browsers: returns HTTP 204 No Content so no new webpage is rendered.
+    - On iOS (iPhone / iPad): immediately returns to the Gmail app via googlegmail:// scheme and closes the tab.
+    """
+    ua = (request.headers.get("user-agent") or "").lower()
+    if "iphone" in ua or "ipad" in ua or "ipod" in ua:
+        html = """<!DOCTYPE html><html><head><meta charset="utf-8"><script>
+window.location.replace("googlegmail://");
+setTimeout(function(){ window.close(); history.back(); }, 60);
+</script></head><body style="margin:0;background:#0F172A;"></body></html>"""
+        return HTMLResponse(content=html, status_code=200)
+    return Response(status_code=204)
+
+
+@router.get("/mfa/push-challenge/{challenge_id}/respond")
+def respond_push_challenge_get(
+    challenge_id: str,
+    request: Request,
+    action: str = Query("approve"),
+    entered_number: Optional[str] = Query(None),
+    db: Session = Depends(get_db),
+) -> Any:
+    return _process_push_challenge_response(request, challenge_id, action, entered_number, db)
+
+
+@router.post("/mfa/push-challenge/{challenge_id}/respond")
+async def respond_push_challenge_post(
+    challenge_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> Any:
+    raw_body = (await request.body()).decode("utf-8", errors="ignore")
+    parsed = urllib.parse.parse_qs(raw_body, keep_blank_values=True)
+    action = parsed.get("action", [request.query_params.get("action", "approve")])[0]
+    entered_number = parsed.get("entered_number", [request.query_params.get("entered_number")])[0]
+    return _process_push_challenge_response(request, challenge_id, action, entered_number, db)
+
+
+def _process_push_challenge_response(
+    request: Request,
+    challenge_id: str,
+    action: str,
+    entered_number: Optional[str],
+    db: Session,
+) -> Response:
+    challenge = PUSH_CHALLENGES.get(challenge_id)
+    if not challenge:
+        return _build_quick_push_response(request)
+
+    now = datetime.now(timezone.utc)
+    if now > challenge["expires_at"] and challenge["status"] == "PENDING":
+        challenge["status"] = "EXPIRED"
+        return _build_quick_push_response(request)
+
+    if challenge["status"] != "PENDING":
+        return _build_quick_push_response(request)
+
+    if (action or "").lower() == "deny":
+        challenge["status"] = "DENIED"
+        challenge["error_message"] = "Sign-in request was denied from your Gmail push notification (Reported as unauthorized)."
+        _record_push_failure_or_denial(
+            db,
+            challenge,
+            reason="User Denied Contextual Push Notification (Potential Account Takeover)",
+            is_denied=True,
+        )
+        return _build_quick_push_response(request)
+
+    clean_num = (entered_number or "").strip()
+    if not clean_num:
+        return _build_quick_push_response(request)
+
+    if clean_num == challenge["expected_number"]:
+        _finalize_push_approval(db, challenge)
+        return _build_quick_push_response(request)
+
+    # Wrong number pressed from the 3 options in the email!
+    challenge["attempts"] += 1
+    remaining = max(0, challenge["max_attempts"] - challenge["attempts"])
+    _record_push_failure_or_denial(
+        db,
+        challenge,
+        reason=f"Contextual Push Number Mismatch (Selected '{clean_num}', Expected '{challenge['expected_number']}')",
+        is_denied=(remaining == 0),
+    )
+
+    if remaining == 0:
+        challenge["status"] = "DENIED"
+        challenge["error_message"] = (
+            f"Sign-in blocked: Wrong number ({clean_num}) was selected in your Gmail push notification. Click 'Send New Push Notification' below to generate a new number."
+        )
+        return _build_quick_push_response(request)
+
+    challenge["error_message"] = (
+        f"Incorrect 2-digit number ({clean_num}) selected in push prompt."
+    )
+    return _build_quick_push_response(request)
+
+
+@router.get("/mfa/push-status")
+def check_push_challenge_status(
+    challenge_id: str = Query(...),
+) -> Dict[str, Any]:
+    """
+    Polled by the Property Base web login screen to check if the user has typed
+    the matching 2-digit number into their Gmail push notification prompt.
+    """
+    challenge = PUSH_CHALLENGES.get(challenge_id)
+    if not challenge:
+        raise HTTPException(status_code=404, detail="Push challenge not found.")
+
+    now = datetime.now(timezone.utc)
+    if now > challenge["expires_at"] and challenge["status"] == "PENDING":
+        challenge["status"] = "EXPIRED"
+        challenge["error_message"] = "Push challenge expired. Click 'Send New Push Notification' to generate a new 2-digit number."
+
+    return {
+        "challenge_id": challenge_id,
+        "status": challenge["status"],
+        "attempts": challenge["attempts"],
+        "remaining_attempts": max(0, challenge["max_attempts"] - challenge["attempts"]),
+        "error_message": challenge.get("error_message"),
+        "token_data": challenge.get("token_payload"),
+    }
+
+
+@router.post("/mfa/push-resend")
+def resend_contextual_push_challenge(
+    request: Request,
+    payload: Dict[str, Any],
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """
+    Generates a fresh random 2-digit number and dispatches a new Contextual Push Notification to the user's Gmail.
+    """
+    pre_auth_token = payload.get("mfa_pre_auth_token")
+    if not pre_auth_token:
+        raise HTTPException(status_code=401, detail="Missing pre-auth token.")
+
+    try:
+        decoded = decode_token(pre_auth_token)
+        if decoded.get("type") != "mfa_pre_auth":
+            raise HTTPException(status_code=401, detail="Invalid token type.")
+        user_id = uuid.UUID(decoded.get("sub"))
+    except Exception as e:
+        raise HTTPException(status_code=401, detail=f"Session expired. Please sign in again: {e}")
+
+    user = db.query(User).filter(User.user_id == user_id).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found.")
+
+    client_ip = request.client.host if request.client else "127.0.0.1"
+    user_agent = request.headers.get("user-agent", "Unknown-Browser")
+    raw_device_hash = payload.get("device_hash") or "default_browser_hash"
+    device_name = payload.get("device_name") or "Property Base Secure Browser"
+    location_label = payload.get("location_label") or "Nairobi, Kenya (EAT)"
+
+    push_info = _issue_contextual_push_challenge(
+        user=user,
+        client_ip=client_ip,
+        user_agent=user_agent,
+        raw_device_hash=raw_device_hash,
+        device_name=device_name,
+        location_label=location_label,
+    )
+
+    return {
+        "status": "resent",
+        "push_challenge_id": push_info["challenge_id"],
+        "push_number": push_info["expected_number"],
+        "push_context": {
+            "location": push_info["location"],
+            "device": push_info["device_info"],
+            "ip_address": push_info["ip_address"],
+            "timestamp": push_info["timestamp"],
+        },
+        "push_approval_url": push_info["approval_page_url"],
+        "smtp_sent": push_info["smtp_sent"],
+        "message": f"New 2-digit number generated and sent to {user.email}.",
     }
 
 
@@ -540,7 +1171,8 @@ def google_login(
     user_agent = request.headers.get("user-agent", "Google-Browser")
     now = datetime.now(timezone.utc)
 
-    device_hash = req.device_hash or f"dev_google_{google_sub[:16] if google_sub else secrets.token_hex(8)}"
+    raw_dev_hash = req.device_hash or f"dev_google_{google_sub[:16] if google_sub else secrets.token_hex(8)}"
+    device_hash = hash_secret_code(f"salt_{user.user_id}_{raw_dev_hash}")
     device = (
         db.query(UserDevice)
         .filter(UserDevice.user_id == user.user_id, UserDevice.device_hash == device_hash)
@@ -572,7 +1204,7 @@ def google_login(
     user_session = UserSession(
         session_id=session_id,
         user_id=user.user_id,
-        token_jti=jti,
+        token_jti=hash_secret_code(jti),
         ip_address=client_ip,
         user_agent=user_agent,
         device_id=device.device_id,
@@ -1309,7 +1941,7 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -
             )
 
         email_clean = req.email.strip().lower()
-        user = db.query(User).filter(User.email == email_clean).first()
+        user = db.query(User).filter(func.lower(User.email) == email_clean).first()
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
@@ -1340,13 +1972,12 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -
                 detail="Please enter your registered email address.",
             )
         email_clean = req.email.strip().lower()
-        user = db.query(User).filter(User.email == email_clean).first()
+        user = db.query(User).filter(func.lower(User.email) == email_clean).first()
         if not user:
-            return {
-                "status": "success",
-                "channel": "EMAIL",
-                "message": "If an account matches this email, a 6-digit verification code has been dispatched.",
-            }
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="No account found matching this email address. Please check your email or sign up.",
+            )
 
     # Generate 6-digit code
     otp_code = generate_otp_code(6)
@@ -1404,7 +2035,7 @@ def forgot_password(req: ForgotPasswordRequest, db: Session = Depends(get_db)) -
             "status": "success",
             "channel": "EMAIL",
             "email": user.email,
-            "message": "If an account matches this email, a 6-digit verification code has been dispatched.",
+            "message": f"A 6-digit verification code has been sent to {user.email}.",
             "expires_in": "10 minutes",
         }
         if not dispatch_res.get("smtp_sent"):
@@ -1419,7 +2050,7 @@ def verify_reset_code(req: VerifyResetCodeRequest, db: Session = Depends(get_db)
     """
     user = None
     if req.email and req.email.strip():
-        user = db.query(User).filter(User.email == req.email.strip().lower()).first()
+        user = db.query(User).filter(func.lower(User.email) == req.email.strip().lower()).first()
     elif req.phone_number and req.phone_number.strip():
         clean_target = normalize_phone_number(req.phone_number.strip())
         all_users = db.query(User).filter(User.mobile_number.isnot(None)).all()
@@ -1484,7 +2115,7 @@ def reset_password(req: ResetPasswordRequest, db: Session = Depends(get_db)) -> 
     """
     user = None
     if req.email and req.email.strip():
-        user = db.query(User).filter(User.email == req.email.strip().lower()).first()
+        user = db.query(User).filter(func.lower(User.email) == req.email.strip().lower()).first()
     elif req.reset_token:
         try:
             payload = decode_token(req.reset_token)

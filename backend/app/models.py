@@ -97,6 +97,7 @@ class User(Base):
     failed_login_attempts = Column(Integer, nullable=False, default=0)
     locked_until = Column(DateTime(timezone=True), nullable=True)
     backup_codes = Column(JSON, nullable=False, default=list)  # Preserved for backward compatibility
+    messages_passcode_hash = Column(String(255), nullable=True)  # Bcrypt/SHA-256 hash of user's Messages passcode
     created_at = Column(
         DateTime(timezone=True),
         nullable=False,
@@ -115,8 +116,81 @@ class User(Base):
     risk_logs = relationship("RiskLog", back_populates="user", cascade="all, delete-orphan")
     mfa_challenges = relationship("MFAChallenge", back_populates="user", cascade="all, delete-orphan")
     backup_code_entries = relationship("UserBackupCode", back_populates="user", cascade="all, delete-orphan")
+    message_passcode_entries = relationship("UserMessagePasscode", back_populates="user", cascade="all, delete-orphan")
     otp_entries = relationship("MFAOTP", back_populates="user", cascade="all, delete-orphan")
     seller_profile = relationship("PropertySeller", back_populates="user", uselist=False, cascade="all, delete-orphan")
+    financial_profile = relationship("UserFinancialProfile", back_populates="user", uselist=False, cascade="all, delete-orphan")
+
+
+class UserFinancialProfile(Base):
+    """
+    Stores a user's credit card and bank account details in the database strictly
+    in cryptographic hash form (bcrypt / SHA-256) along with star-masked (*) display previews.
+    """
+    __tablename__ = "user_financial_profiles"
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        GUID(),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+    cardholder_name = Column(String(255), nullable=False)
+    bank_name = Column(String(255), nullable=False)
+
+    # Cryptographic hashes of confidential financial & contact fields
+    card_number_hash = Column(String(255), nullable=False)
+    bank_account_hash = Column(String(255), nullable=False)
+    cvv_hash = Column(String(255), nullable=False)
+    expiry_date_hash = Column(String(255), nullable=False)
+    swift_routing_hash = Column(String(255), nullable=False)
+    billing_phone_hash = Column(String(255), nullable=False)
+
+    # Star-masked (*) representations for safe UI display (no plaintext stored)
+    card_number_masked = Column(String(64), nullable=False, default="**** **** **** 8842")
+    bank_account_masked = Column(String(64), nullable=False, default="********7465")
+    expiry_date_masked = Column(String(20), nullable=False, default="**/**")
+    swift_routing_masked = Column(String(64), nullable=False, default="KCB******14")
+    billing_phone_masked = Column(String(64), nullable=False, default="+254 *** *** 902")
+
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+        onupdate=lambda: datetime.now(timezone.utc),
+    )
+
+    user = relationship("User", back_populates="financial_profile")
+
+
+class UserMessagePasscode(Base):
+    """Stores one-time / secret passcodes set by a seller for accessing their Messages page as cryptographic hashes."""
+    __tablename__ = "user_message_passcodes"
+
+    id = Column(GUID(), primary_key=True, default=uuid.uuid4)
+    user_id = Column(
+        GUID(),
+        ForeignKey("users.user_id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    passcode_hash = Column(String(255), nullable=False, index=True)
+    is_used = Column(Boolean, nullable=False, default=False)
+    used_at = Column(DateTime(timezone=True), nullable=True)
+    created_at = Column(
+        DateTime(timezone=True),
+        nullable=False,
+        default=lambda: datetime.now(timezone.utc),
+    )
+
+    user = relationship("User", back_populates="message_passcode_entries")
 
 
 class UserBackupCode(Base):

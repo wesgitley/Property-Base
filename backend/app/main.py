@@ -1,8 +1,21 @@
+import json
 import logging
+import sqlite3
+import sys
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
+from pathlib import Path
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from sqlalchemy import func, inspect, text
 from sqlalchemy.orm import Session
+
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 from app.api.admin import router as admin_router
 from app.api.auth import router as auth_router
@@ -11,13 +24,19 @@ from app.api.users import router as users_router
 from app.core.database import Base, SessionLocal, engine
 from app.core.security import get_password_hash
 from app.models import (
+    MFAChallenge,
+    MFAOTP,
     PropertyListing,
     PropertySeller,
     PropertyStatus,
     User,
+    UserBackupCode,
     UserBehaviorBaseline,
     UserDevice,
+    UserFinancialProfile,
+    UserMessagePasscode,
     UserRole,
+    UserSession,
     UserStatus,
 )
 from app.services.email_service import generate_backup_codes, hash_secret_code
@@ -27,13 +46,245 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("propertybase")
 
 
+def _ensure_engine_auth_schema(target_engine):
+    """
+    Ensures mfa_otps, user_backup_codes, user_message_passcodes, and users.messages_passcode_hash
+    in PostgreSQL / SQLite match the current SQLAlchemy model columns.
+    """
+    try:
+        insp = inspect(target_engine)
+        table_names = insp.get_table_names()
+
+        if "users" in table_names:
+            user_cols = {c["name"] for c in insp.get_columns("users")}
+            if "messages_passcode_hash" not in user_cols:
+                with target_engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN messages_passcode_hash VARCHAR(255)"))
+                logger.info("Added messages_passcode_hash column to users table.")
+
+        if "mfa_otps" in table_names:
+            cols = {c["name"] for c in insp.get_columns("mfa_otps")}
+            expected_otp_cols = {"id", "user_id", "otp_code_hash", "attempts", "is_used", "expires_at", "created_at"}
+            if not expected_otp_cols.issubset(cols):
+                logger.info(f"Recreating mfa_otps table to match expected schema (found columns: {cols})")
+                with target_engine.begin() as conn:
+                    conn.execute(text("DROP TABLE IF EXISTS mfa_otps"))
+
+        if "user_backup_codes" in table_names:
+            cols = {c["name"] for c in insp.get_columns("user_backup_codes")}
+            expected_bc_cols = {"id", "user_id", "code_hash", "is_used", "used_at", "created_at"}
+            if not expected_bc_cols.issubset(cols):
+                logger.info(f"Recreating user_backup_codes table to match expected schema (found columns: {cols})")
+                with target_engine.begin() as conn:
+                    conn.execute(text("DROP TABLE IF EXISTS user_backup_codes"))
+    except Exception as exc:
+        logger.warning(f"Schema inspection warning: {exc}")
+
+
+def ensure_auth_tables_schema():
+    _ensure_engine_auth_schema(engine)
+    try:
+        from app.core.database import fallback_engine
+        _ensure_engine_auth_schema(fallback_engine)
+    except Exception:
+        pass
+
+
+def _is_sha256_hex(val: str) -> bool:
+    if not val or len(val) != 64:
+        return False
+    return all(c in "0123456789abcdefABCDEF" for c in val)
+
+
+def ensure_sensitive_data_hashed_in_db(db: Session):
+    """
+    Audits and enforces that all passwords, messages passcodes, backup codes, OTPs,
+    session tokens, and sensitive device traits in the database are stored strictly as cryptographic hashes.
+    """
+    try:
+        updated = False
+        # 1. Users: password_hash (bcrypt), messages_passcode_hash (bcrypt), backup_codes (SHA-256)
+        for u in db.query(User).all():
+            if u.password_hash and not u.password_hash.startswith(("$2b$", "$2a$", "$2y$")):
+                u.password_hash = get_password_hash(u.password_hash)
+                updated = True
+            if u.messages_passcode_hash and not u.messages_passcode_hash.startswith(("$2b$", "$2a$", "$2y$")):
+                u.messages_passcode_hash = get_password_hash(u.messages_passcode_hash)
+                updated = True
+            if u.backup_codes and isinstance(u.backup_codes, list):
+                new_bc = []
+                bc_changed = False
+                for code in u.backup_codes:
+                    if isinstance(code, str) and not _is_sha256_hex(code):
+                        new_bc.append(hash_secret_code(code))
+                        bc_changed = True
+                    else:
+                        new_bc.append(code)
+                if bc_changed:
+                    u.backup_codes = new_bc
+                    updated = True
+
+        # 2. UserMessagePasscode: passcode_hash (bcrypt)
+        for mp in db.query(UserMessagePasscode).all():
+            if mp.passcode_hash and not mp.passcode_hash.startswith(("$2b$", "$2a$", "$2y$")):
+                mp.passcode_hash = get_password_hash(mp.passcode_hash)
+                updated = True
+
+        # 3. UserBackupCode: code_hash (SHA-256)
+        for bc in db.query(UserBackupCode).all():
+            if bc.code_hash and not _is_sha256_hex(bc.code_hash):
+                bc.code_hash = hash_secret_code(bc.code_hash)
+                updated = True
+
+        # 4. MFAOTP & MFAChallenge: otp_code_hash (SHA-256)
+        for otp in db.query(MFAOTP).all():
+            if otp.otp_code_hash and not _is_sha256_hex(otp.otp_code_hash):
+                otp.otp_code_hash = hash_secret_code(otp.otp_code_hash)
+                updated = True
+        for ch in db.query(MFAChallenge).all():
+            if ch.otp_code_hash and not _is_sha256_hex(ch.otp_code_hash):
+                ch.otp_code_hash = hash_secret_code(ch.otp_code_hash)
+                updated = True
+
+        # 5. UserDevice & UserBehaviorBaseline: hardware fingerprint hashes (SHA-256)
+        for dev in db.query(UserDevice).all():
+            if dev.device_hash and not _is_sha256_hex(dev.device_hash):
+                dev.device_hash = hash_secret_code(f"salt_{dev.user_id}_{dev.device_hash}")
+                updated = True
+            if dev.canvas_hash and not _is_sha256_hex(dev.canvas_hash):
+                dev.canvas_hash = hash_secret_code(dev.canvas_hash)
+                updated = True
+            if dev.webgl_hash and not _is_sha256_hex(dev.webgl_hash):
+                dev.webgl_hash = hash_secret_code(dev.webgl_hash)
+                updated = True
+            if dev.fonts_hash and not _is_sha256_hex(dev.fonts_hash):
+                dev.fonts_hash = hash_secret_code(dev.fonts_hash)
+                updated = True
+
+        for bl in db.query(UserBehaviorBaseline).all():
+            if bl.trusted_device_hashes and isinstance(bl.trusted_device_hashes, list):
+                new_th = []
+                th_changed = False
+                for th in bl.trusted_device_hashes:
+                    if isinstance(th, str) and not _is_sha256_hex(th):
+                        new_th.append(hash_secret_code(th))
+                        th_changed = True
+                    else:
+                        new_th.append(th)
+                if th_changed:
+                    bl.trusted_device_hashes = new_th
+                    updated = True
+
+        # 6. UserSession: token_jti (SHA-256)
+        for sess in db.query(UserSession).all():
+            if sess.token_jti and not _is_sha256_hex(sess.token_jti):
+                sess.token_jti = hash_secret_code(sess.token_jti)
+                updated = True
+
+        # 7. UserFinancialProfile: ensure every financial field is hashed (bcrypt / SHA-256)
+        for fin in db.query(UserFinancialProfile).all():
+            if fin.card_number_hash and not _is_bcrypt_hash(fin.card_number_hash):
+                fin.card_number_hash = get_password_hash(fin.card_number_hash)
+                updated = True
+            if fin.bank_account_hash and not _is_bcrypt_hash(fin.bank_account_hash):
+                fin.bank_account_hash = get_password_hash(fin.bank_account_hash)
+                updated = True
+            if fin.cvv_hash and not _is_bcrypt_hash(fin.cvv_hash):
+                fin.cvv_hash = get_password_hash(fin.cvv_hash)
+                updated = True
+            if fin.expiry_date_hash and not _is_sha256_hex(fin.expiry_date_hash):
+                fin.expiry_date_hash = hash_secret_code(fin.expiry_date_hash)
+                updated = True
+            if fin.swift_routing_hash and not _is_sha256_hex(fin.swift_routing_hash):
+                fin.swift_routing_hash = hash_secret_code(fin.swift_routing_hash)
+                updated = True
+            if fin.billing_phone_hash and not _is_sha256_hex(fin.billing_phone_hash):
+                fin.billing_phone_hash = hash_secret_code(fin.billing_phone_hash)
+                updated = True
+
+        if updated:
+            db.commit()
+            logger.info("Verified and hashed all sensitive credentials, passcodes, financial details, and tokens in database.")
+    except Exception as exc:
+        db.rollback()
+        logger.warning(f"Database hash enforcement check note: {exc}")
+
+
+def sync_local_sqlite_users_to_db(db: Session):
+    """
+    Migrates any user accounts created in local propertybase.db into the active PostgreSQL database
+    so no previously registered user accounts are missing.
+    """
+    sqlite_path = Path(__file__).resolve().parent.parent / "propertybase.db"
+    if not sqlite_path.exists():
+        return
+    try:
+        conn = sqlite3.connect(str(sqlite_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute("SELECT * FROM users")
+        rows = cur.fetchall()
+        for r in rows:
+            row_dict = dict(r)
+            email = (row_dict.get("email") or "").strip().lower()
+            if not email:
+                continue
+            existing = db.query(User).filter(func.lower(User.email) == email).first()
+            if not existing:
+                username = row_dict.get("username")
+                if username:
+                    u_clash = db.query(User).filter(User.username == username).first()
+                    if u_clash:
+                        username = f"{username}_{email.split('@')[0]}"
+                pwd_hash = row_dict.get("password_hash") or row_dict.get("hashed_password") or get_password_hash("PropertyPass123!")
+                raw_bc = row_dict.get("backup_codes")
+                if isinstance(raw_bc, str):
+                    try:
+                        bc_list = json.loads(raw_bc)
+                    except Exception:
+                        bc_list = []
+                elif isinstance(raw_bc, list):
+                    bc_list = raw_bc
+                else:
+                    bc_list = []
+
+                role_str = str(row_dict.get("role") or "SELLER").upper()
+                role_val = UserRole.ADMIN if "ADMIN" in role_str else UserRole.SELLER
+
+                new_u = User(
+                    first_name=row_dict.get("first_name"),
+                    last_name=row_dict.get("last_name"),
+                    mobile_number=row_dict.get("mobile_number"),
+                    username=username,
+                    email=email,
+                    hashed_password=pwd_hash,
+                    role=role_val,
+                    status=UserStatus.ACTIVE,
+                    is_active=True,
+                    is_mfa_enabled=True,
+                    mfa_enabled=True,
+                    backup_codes=bc_list,
+                )
+                db.add(new_u)
+                db.commit()
+                db.refresh(new_u)
+                for h_code in bc_list:
+                    db.add(UserBackupCode(user_id=new_u.user_id, code_hash=h_code, is_used=False))
+                db.commit()
+                logger.info(f"Synced user account to PostgreSQL: {email}")
+        conn.close()
+    except Exception as exc:
+        db.rollback()
+        logger.warning(f"Local user sync note: {exc}")
+
+
 def seed_initial_demo_data(db: Session):
     """
     Seeds default admin and seller accounts, baseline telemetry, and sample property listings.
     """
     # 1. Admin Account
     admin_email = "admin@propertybase.com"
-    existing_admin = db.query(User).filter(User.email == admin_email).first()
+    existing_admin = db.query(User).filter(func.lower(User.email) == admin_email).first()
     if not existing_admin:
         admin_codes = generate_backup_codes(8)
         admin_user = User(
@@ -49,9 +300,40 @@ def seed_initial_demo_data(db: Session):
         db.refresh(admin_user)
         logger.info(f"Seeded System Administrator: {admin_email} / AdminPass123!")
 
-    # 2. Demo Seller Account
+    # 2. Project Owner Account (Wesley)
+    wesley_email = "wesley.mutisya@strathmore.edu"
+    existing_wesley = db.query(User).filter(func.lower(User.email) == wesley_email).first()
+    if not existing_wesley:
+        wesley_codes = generate_backup_codes(8)
+        hashed_wesley_codes = [hash_secret_code(c) for c in wesley_codes]
+        wesley_user = User(
+            first_name="Wesley",
+            last_name="Mutisya",
+            username="wesley_mutisya",
+            email=wesley_email,
+            mobile_number="+254700000000",
+            hashed_password=get_password_hash("WesleyPass123!"),
+            role=UserRole.SELLER,
+            status=UserStatus.ACTIVE,
+            is_active=True,
+            is_mfa_enabled=True,
+            mfa_enabled=True,
+            backup_codes=hashed_wesley_codes,
+        )
+        db.add(wesley_user)
+        db.commit()
+        db.refresh(wesley_user)
+        for h_code in hashed_wesley_codes:
+            db.add(UserBackupCode(user_id=wesley_user.user_id, code_hash=h_code, is_used=False))
+        db.commit()
+        logger.info(f"Seeded Owner Account: {wesley_email}")
+
+    # Sync any other accounts from local SQLite DB into PostgreSQL
+    sync_local_sqlite_users_to_db(db)
+
+    # 3. Demo Seller Account
     seller_email = "seller@realestate.com"
-    existing_seller = db.query(User).filter(User.email == seller_email).first()
+    existing_seller = db.query(User).filter(func.lower(User.email) == seller_email).first()
     if not existing_seller:
         seller_codes = generate_backup_codes(8)
         seller_user = User(
@@ -86,7 +368,7 @@ def seed_initial_demo_data(db: Session):
             known_ips=["127.0.0.1", "192.168.1.100"],
             known_locations=[{"city": "Nairobi", "country": "KE"}, {"city": "New York", "country": "US"}],
             typical_login_hours=[8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
-            trusted_device_hashes=["demo_trusted_device_hash_12345"],
+            trusted_device_hashes=[hash_secret_code("demo_trusted_device_hash_12345")],
             sample_count=25,
         )
         db.add(baseline)
@@ -96,9 +378,9 @@ def seed_initial_demo_data(db: Session):
             user_id=seller_user.user_id,
             device_hash=hash_secret_code(f"salt_{seller_user.user_id}_demo_trusted_device_hash_12345"),
             device_name="Seller MacBook Pro (Chrome)",
-            canvas_hash="canvas_hash_genuine_44321",
-            webgl_hash="webgl_hash_genuine_88990",
-            fonts_hash="fonts_hash_genuine_11223",
+            canvas_hash=hash_secret_code("canvas_hash_genuine_44321"),
+            webgl_hash=hash_secret_code("webgl_hash_genuine_88990"),
+            fonts_hash=hash_secret_code("fonts_hash_genuine_11223"),
             os_platform="MacIntel",
             browser_engine="Chrome",
             is_trusted=True,
@@ -171,13 +453,36 @@ def seed_initial_demo_data(db: Session):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Ensure tables exist and seed demo data
-    Base.metadata.create_all(bind=engine)
-    db = SessionLocal()
+    # Startup: Ensure tables exist and match current schema, then seed data
+    ensure_auth_tables_schema()
     try:
+        Base.metadata.create_all(bind=engine)
+    except Exception as exc:
+        logger.warning(f"Primary engine table creation warning: {exc}")
+
+    # Use get_db's failover-safe session for startup seeding
+    from app.core.database import FallbackSessionLocal, fallback_engine
+    try:
+        Base.metadata.create_all(bind=fallback_engine)
+    except Exception:
+        pass
+
+    try:
+        db = SessionLocal()
+        db.execute(text("SELECT 1"))
         seed_initial_demo_data(db)
-    finally:
+        ensure_sensitive_data_hashed_in_db(db)
         db.close()
+    except Exception as exc:
+        logger.warning(f"Primary DB unreachable during startup seed ({exc}); seeding local fallback DB.")
+        try:
+            fb_db = FallbackSessionLocal()
+            seed_initial_demo_data(fb_db)
+            ensure_sensitive_data_hashed_in_db(fb_db)
+            fb_db.close()
+        except Exception as fb_exc:
+            logger.warning(f"Fallback DB seed warning: {fb_exc}")
+
     # Pre-warm ML model
     RiskEngine.get_model()
     yield
@@ -201,6 +506,17 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled error on {request.url.path}: {exc}", exc_info=True)
+    return JSONResponse(
+        status_code=500,
+        content={"detail": f"Server error: {str(exc)}"},
+        headers={"Access-Control-Allow-Origin": "*"},
+    )
+
 
 # Router registration
 app.include_router(auth_router, prefix="/api/v1")
