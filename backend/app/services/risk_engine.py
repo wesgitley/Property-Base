@@ -13,6 +13,7 @@ from app.ml.sequence_model import PostLoginSequenceScorer
 from app.models import RiskTier, SecurityAction, User, UserBehaviorBaseline
 from app.services.baseline_store import BaselineStore
 from app.services.fraud_graph import CrossAccountFraudGraph
+from app.services.geo_velocity import GeodesicVelocityIntelligence
 
 logger = logging.getLogger(__name__)
 
@@ -158,12 +159,21 @@ class RiskEngine:
             )
             graph_boost = float(graph_intel.get("graph_risk_boost", 0.0))
 
+            # 4d. Impossible-Travel Geodesic Velocity & ASN Threat Intelligence
+            geo_velocity_intel = GeodesicVelocityIntelligence.evaluate_geodesic_velocity(
+                db=db,
+                user_id=user_id,
+                ip_address=ip_address,
+                current_location=location,
+            )
+            geo_boost = float(geo_velocity_intel.get("geodesic_risk_boost", 0.0))
+
             # Fuse neural risk with physical deviation constraints, temporal sequence risk, and fraud graph boost
             stream_max = max(behavior_dev, context_dev, device_dev, seq_score)
             stream_mean = (behavior_dev * 0.30) + (context_dev * 0.30) + (device_dev * 0.20) + (seq_score * 0.20)
             heuristic_risk = 0.50 * stream_max + 0.50 * stream_mean
             total_risk = round(
-                float(np.clip(0.55 * neural_risk + 0.45 * heuristic_risk + graph_boost, 0.0, 1.0)),
+                float(np.clip(0.55 * neural_risk + 0.45 * heuristic_risk + graph_boost + geo_boost, 0.0, 1.0)),
                 3,
             )
 
@@ -178,6 +188,22 @@ class RiskEngine:
             )
             attributions["sequence_intelligence"] = seq_diagnostics
             attributions["cross_account_graph_intelligence"] = graph_intel
+            attributions["geodesic_velocity_intelligence"] = geo_velocity_intel
+            if geo_boost > 0.0:
+                top_factors = list(attributions.get("top_risk_factors", []))
+                top_factors.insert(
+                    0,
+                    {
+                        "feature": "impossible_travel_or_anonymizer_asn",
+                        "display_name": (
+                            f"Impossible Travel ({geo_velocity_intel['required_velocity_kmh']} km/h)"
+                            if geo_velocity_intel.get("impossible_travel_detected")
+                            else f"ASN Threat ({geo_velocity_intel['asn_intelligence']['asn_category']})"
+                        ),
+                        "impact": geo_boost,
+                    },
+                )
+                attributions["top_risk_factors"] = top_factors[:6]
             if graph_boost > 0.0:
                 top_factors = list(attributions.get("top_risk_factors", []))
                 top_factors.insert(
