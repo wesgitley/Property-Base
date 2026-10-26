@@ -140,6 +140,7 @@ class RiskEngine:
             with torch.no_grad():
                 pred, embeddings = model(b_tensor, c_tensor, d_tensor)
                 neural_risk = float(pred.item())
+            mc_uncertainty = model.predict_with_uncertainty(b_tensor, c_tensor, d_tensor, n_samples=10)
 
             # 4b. Post-Login Behavioral Sequence Modeling (Markov & Temporal Sequence Expert)
             nav_seq = telemetry.get("navigation_sequence") or ["LOGIN", "LISTINGS_VIEW"]
@@ -199,6 +200,7 @@ class RiskEngine:
             attributions["cross_account_graph_intelligence"] = graph_intel
             attributions["geodesic_velocity_intelligence"] = geo_velocity_intel
             attributions["zero_day_ood_intelligence"] = ood_intel
+            attributions["epistemic_uncertainty_intelligence"] = mc_uncertainty
             attributions["counterfactual_intelligence"] = ExplainerEngine.compute_counterfactual_prescriptions(
                 model=model,
                 behavior_vec=behavior_vec,

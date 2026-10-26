@@ -171,3 +171,48 @@ class LateFusionNetwork(nn.Module):
             "unified_emb": unified,
         }
         return risk_score, embeddings
+
+    def predict_with_uncertainty(
+        self,
+        behavior_feat: torch.Tensor,
+        context_feat: torch.Tensor,
+        device_feat: torch.Tensor,
+        n_samples: int = 10,
+    ) -> Dict[str, object]:
+        """
+        Upgrade 5: Monte Carlo Dropout Epistemic Uncertainty Quantification.
+        Runs T stochastic forward passes with Dropout layers active to estimate
+        predictive mean and epistemic uncertainty (95% confidence interval).
+        """
+        self.eval()
+        for module in self.modules():
+            if isinstance(module, nn.Dropout):
+                module.train()
+
+        samples = []
+        with torch.no_grad():
+            for _ in range(max(2, n_samples)):
+                pred, _ = self.forward(behavior_feat, context_feat, device_feat)
+                samples.append(float(pred.item()))
+
+        self.eval()
+        mean_val = sum(samples) / len(samples)
+        variance = sum((s - mean_val) ** 2 for s in samples) / len(samples)
+        std_val = variance ** 0.5
+        ci_low = max(0.0, round(mean_val - 1.96 * std_val, 3))
+        ci_high = min(1.0, round(mean_val + 1.96 * std_val, 3))
+
+        if std_val < 0.045:
+            conf_label = "HIGH_CONFIDENCE"
+        elif std_val < 0.095:
+            conf_label = "MODERATE_CONFIDENCE"
+        else:
+            conf_label = "HIGH_UNCERTAINTY_STEP_UP"
+
+        return {
+            "mc_mean_risk": round(mean_val, 4),
+            "epistemic_std": round(std_val, 4),
+            "confidence_interval_95": [ci_low, ci_high],
+            "confidence_label": conf_label,
+            "stochastic_passes": len(samples),
+        }
