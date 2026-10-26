@@ -12,6 +12,7 @@ from app.ml.moe_architecture import LateFusionNetwork
 from app.ml.sequence_model import PostLoginSequenceScorer
 from app.models import RiskTier, SecurityAction, User, UserBehaviorBaseline
 from app.services.baseline_store import BaselineStore
+from app.services.fraud_graph import CrossAccountFraudGraph
 
 logger = logging.getLogger(__name__)
 
@@ -148,11 +149,23 @@ class RiskEngine:
                 rapid_tab_switches=int(telemetry.get("rapid_tab_switches", 0)),
             )
 
-            # Fuse neural risk with physical deviation constraints and temporal sequence risk
+            # 4c. Cross-Account Entity Graph Detection (Pillar 3)
+            graph_intel = CrossAccountFraudGraph.evaluate_cross_account_infrastructure(
+                db=db,
+                current_user_id=user_id,
+                ip_address=ip_address,
+                raw_device_hash=device_data.get("device_hash"),
+            )
+            graph_boost = float(graph_intel.get("graph_risk_boost", 0.0))
+
+            # Fuse neural risk with physical deviation constraints, temporal sequence risk, and fraud graph boost
             stream_max = max(behavior_dev, context_dev, device_dev, seq_score)
             stream_mean = (behavior_dev * 0.30) + (context_dev * 0.30) + (device_dev * 0.20) + (seq_score * 0.20)
             heuristic_risk = 0.50 * stream_max + 0.50 * stream_mean
-            total_risk = round(float(np.clip(0.55 * neural_risk + 0.45 * heuristic_risk, 0.0, 1.0)), 3)
+            total_risk = round(
+                float(np.clip(0.55 * neural_risk + 0.45 * heuristic_risk + graph_boost, 0.0, 1.0)),
+                3,
+            )
 
             # 5. SHAP Interpretability & Feature Attributions (NFR-05)
             attributions = ExplainerEngine.compute_attributions(
@@ -164,6 +177,18 @@ class RiskEngine:
                 baseline_pred=0.15,
             )
             attributions["sequence_intelligence"] = seq_diagnostics
+            attributions["cross_account_graph_intelligence"] = graph_intel
+            if graph_boost > 0.0:
+                top_factors = list(attributions.get("top_risk_factors", []))
+                top_factors.insert(
+                    0,
+                    {
+                        "feature": "cross_account_fraud_ring",
+                        "display_name": "Cross-Account Attacker IP/Device Reuse",
+                        "impact": graph_boost,
+                    },
+                )
+                attributions["top_risk_factors"] = top_factors[:6]
             if seq_score >= 0.45:
                 top_factors = list(attributions.get("top_risk_factors", []))
                 top_factors.insert(
