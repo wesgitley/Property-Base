@@ -8,7 +8,7 @@ from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_admin
 from app.core.database import get_db
-from app.ml.train_evaluate import train_and_evaluate_model
+from app.ml.train_evaluate import online_fine_tune_from_feedback, train_and_evaluate_model
 from app.models import (
     AdminOverride,
     OverrideAction,
@@ -27,6 +27,7 @@ from app.schemas import (
     FlaggedSessionItem,
     ModelMetricsResponse,
 )
+from app.services.baseline_store import BaselineStore
 from app.services.email_service import dispatch_suspicious_activity_emails
 from app.services.risk_engine import RiskEngine
 
@@ -405,6 +406,32 @@ def override_risk_decision(
     elif req.action_taken == OverrideAction.OVERRIDE_SCORE:
         if req.new_risk_score is not None:
             risk_log.total_risk_score = round(req.new_risk_score, 3)
+
+    # Pillar 2: Closed-Loop Active Learning & Online Fine-Tuning + EMA Baseline Adaptation
+    is_attack_feedback = req.action_taken in (OverrideAction.FLAG_TRUE_POSITIVE, OverrideAction.FORCE_MFA)
+    is_benign_feedback = req.action_taken in (
+        OverrideAction.FLAG_FALSE_POSITIVE,
+        OverrideAction.APPROVE_SESSION,
+        OverrideAction.UNLOCK_ACCOUNT,
+    )
+    if is_attack_feedback or is_benign_feedback:
+        try:
+            online_fine_tune_from_feedback(
+                behavior_dev=_normalize_score(risk_log.behavior_deviation_score, 0.5),
+                context_dev=_normalize_score(risk_log.context_deviation_score, 0.5),
+                device_dev=_normalize_score(risk_log.device_deviation_score, 0.5),
+                is_malicious=is_attack_feedback,
+            )
+            RiskEngine._model = None  # Reload updated neural weights on next evaluation
+            BaselineStore.adapt_baseline_from_risk_log(
+                db=db,
+                user_id=str(risk_log.user_id),
+                ip_address=risk_log.ip_address,
+                location=risk_log.geolocation,
+                is_confirmed_attack=is_attack_feedback,
+            )
+        except Exception:
+            pass
 
     override = AdminOverride(
         risk_log_id=risk_log.risk_id,

@@ -155,5 +155,114 @@ def train_and_evaluate_model(
     return report
 
 
+def online_fine_tune_from_feedback(
+    behavior_dev: float,
+    context_dev: float,
+    device_dev: float,
+    is_malicious: bool,
+    steps: int = 4,
+    learning_rate: float = 0.0005,
+) -> dict:
+    """
+    Pillar 2: Closed-Loop Active Learning & Online Fine-Tuning.
+    Uses SOC Admin feedback (FLAG_TRUE_POSITIVE / FLAG_FALSE_POSITIVE / APPROVE_SESSION)
+    or confirmed step-up MFA failures to perform incremental gradient steps on the
+    LateFusionNetwork weights and persist the updated model.
+    """
+    weights_dir = Path(__file__).resolve().parent / "weights"
+    weights_dir.mkdir(parents=True, exist_ok=True)
+    weights_file = weights_dir / "moe_ato_detector.pt"
+    report_file = weights_dir / "metrics_report.json"
+
+    model = LateFusionNetwork()
+    if weights_file.exists():
+        try:
+            model.load_state_dict(torch.load(weights_file, map_location=torch.device("cpu")))
+        except Exception:
+            pass
+
+    b_dev = float(np.clip(behavior_dev, 0.0, 1.0))
+    c_dev = float(np.clip(context_dev, 0.0, 1.0))
+    d_dev = float(np.clip(device_dev, 0.0, 1.0))
+    target_val = 1.0 if is_malicious else 0.0
+
+    # Reconstruct representative 10-D behavioral, 6-D contextual, and 6-D device tensors
+    z_scale = 2.8 if is_malicious else 0.35
+    b_vec = torch.tensor(
+        [[
+            b_dev * z_scale,
+            b_dev * z_scale,
+            b_dev * (z_scale * 0.8),
+            b_dev * z_scale,
+            b_dev * (z_scale * 0.9),
+            b_dev * z_scale,
+            b_dev * z_scale,
+            120.0 + (b_dev * 140.0 if is_malicious else 0.0),
+            85.0 + (b_dev * 65.0 if is_malicious else 0.0),
+            b_dev,
+        ]],
+        dtype=torch.float32,
+    )
+    c_vec = torch.tensor(
+        [[
+            1.0 if (is_malicious and c_dev >= 0.4) else 0.0,
+            1.0 if (is_malicious and c_dev >= 0.5) else 0.0,
+            c_dev,
+            c_dev * z_scale,
+            2.0 if is_malicious else 14.0,
+            c_dev,
+        ]],
+        dtype=torch.float32,
+    )
+    d_vec = torch.tensor(
+        [[
+            0.0 if (is_malicious and d_dev >= 0.4) else 1.0,
+            1.0 - d_dev,
+            1.0,
+            1.0,
+            1.0,
+            d_dev,
+        ]],
+        dtype=torch.float32,
+    )
+    y_target = torch.tensor([[target_val]], dtype=torch.float32)
+
+    model.train()
+    criterion = nn.BCELoss()
+    optimizer = torch.optim.AdamW(model.parameters(), lr=learning_rate, weight_decay=1e-4)
+
+    initial_pred = 0.5
+    final_pred = 0.5
+    for step_idx in range(steps):
+        optimizer.zero_grad()
+        pred, _ = model(b_vec, c_vec, d_vec)
+        if step_idx == 0:
+            initial_pred = float(pred.item())
+        loss = criterion(pred, y_target)
+        loss.backward()
+        optimizer.step()
+        final_pred = float(pred.item())
+
+    model.eval()
+    torch.save(model.state_dict(), weights_file)
+
+    # Record active learning telemetry in metrics_report.json
+    if report_file.exists():
+        try:
+            with open(report_file, "r") as f:
+                report_data = json.load(f)
+            report_data["online_feedback_updates"] = int(report_data.get("online_feedback_updates", 0)) + 1
+            with open(report_file, "w") as f:
+                json.dump(report_data, f, indent=2)
+        except Exception:
+            pass
+
+    return {
+        "target_label": int(target_val),
+        "initial_prediction": round(initial_pred, 4),
+        "updated_prediction": round(final_pred, 4),
+    }
+
+
 if __name__ == "__main__":
     train_and_evaluate_model()

@@ -198,3 +198,55 @@ class BaselineStore:
                 r.delete(f"baseline:{user_id}")
             except Exception:
                 pass
+
+    @classmethod
+    def adapt_baseline_from_risk_log(
+        cls,
+        db: Session,
+        user_id: str,
+        ip_address: Optional[str] = None,
+        location: Optional[Dict[str, Any]] = None,
+        is_confirmed_attack: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Pillar 2: Closed-Loop EMA Baseline Drift Adaptation.
+        - When a session is verified benign (or marked FLAG_FALSE_POSITIVE / APPROVE_SESSION),
+          gradually adapts the seller's baseline and whitelists the verified IP/location.
+        - When a session is confirmed malicious (FLAG_TRUE_POSITIVE), purges the attacker's
+          IP from known_ips so future connections from that IP remain high-risk.
+        """
+        uid = uuid.UUID(str(user_id)) if not isinstance(user_id, uuid.UUID) else user_id
+        db_record = db.query(UserBehaviorBaseline).filter(UserBehaviorBaseline.user_id == uid).first()
+        if not db_record:
+            cls.get_baseline(db, str(uid))
+            db_record = db.query(UserBehaviorBaseline).filter(UserBehaviorBaseline.user_id == uid).first()
+
+        if is_confirmed_attack:
+            if ip_address and db_record.known_ips and ip_address in db_record.known_ips:
+                db_record.known_ips = [ip for ip in db_record.known_ips if ip != ip_address]
+            db_record.updated_at = datetime.now(timezone.utc)
+            db.commit()
+        else:
+            if ip_address:
+                known = list(db_record.known_ips or [])
+                if ip_address not in known:
+                    known.append(ip_address)
+                    db_record.known_ips = known[-10:]
+            if location and isinstance(location, dict):
+                city_country = {"city": location.get("city", "Nairobi"), "country": location.get("country", "Kenya")}
+                locs = list(db_record.known_locations or [])
+                if city_country not in locs:
+                    locs.append(city_country)
+                    db_record.known_locations = locs[-10:]
+            db_record.sample_count = (db_record.sample_count or 1) + 1
+            db_record.updated_at = datetime.now(timezone.utc)
+            db.commit()
+
+        r = cls.get_redis_client()
+        if r:
+            try:
+                r.delete(f"baseline:{uid}")
+            except Exception:
+                pass
+
+        return {"sample_count": db_record.sample_count, "is_confirmed_attack": is_confirmed_attack}
