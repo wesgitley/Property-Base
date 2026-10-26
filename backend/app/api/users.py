@@ -36,7 +36,9 @@ from app.services.email_service import (
     generate_otp_code,
     hash_secret_code,
 )
+from app.services.baseline_store import BaselineStore
 from app.services.fraud_graph import CrossAccountFraudGraph
+from app.services.risk_engine import RiskEngine
 
 router = APIRouter(prefix="/users", tags=["Users Profile & Security"])
 
@@ -1493,6 +1495,150 @@ def verify_financials_edit_stepup(
             f"verified! You can now edit and update your financial details."
         ),
     }
+
+
+class LiveTelemetryHeartbeatRequest(BaseModel):
+    keystroke: Optional[Dict[str, Any]] = None
+    mouse: Optional[Dict[str, Any]] = None
+    navigation_sequence: Optional[List[str]] = None
+    seconds_since_login: Optional[float] = 45.0
+    paste_detected: Optional[bool] = False
+    rapid_tab_switches: Optional[int] = 0
+    action_velocity: Optional[float] = 2.2
+    device_data: Optional[Dict[str, Any]] = None
+    location: Optional[Dict[str, str]] = None
+
+
+@router.post("/me/telemetry-heartbeat")
+def evaluate_live_session_telemetry(
+    req: LiveTelemetryHeartbeatRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Pillar 4: Real-Time Browser Biometric Sensor Agent & Continuous Session Risk Scoring.
+    Evaluates live DOM keystroke dynamics, mouse trajectories, copy-paste flags, and
+    navigation sequence against the seller's baseline via the MoE RiskEngine.
+    """
+    client_ip = request.client.host if request and request.client else "127.0.0.1"
+    loc = req.location or {"city": "Nairobi", "country": "Kenya"}
+    telemetry = {
+        "keystroke": req.keystroke or {},
+        "mouse": req.mouse or {},
+        "navigation_sequence": req.navigation_sequence or ["LOGIN", "LISTINGS_VIEW"],
+        "seconds_since_login": req.seconds_since_login or 45.0,
+        "paste_detected": bool(req.paste_detected),
+        "rapid_tab_switches": int(req.rapid_tab_switches or 0),
+        "action_velocity": float(req.action_velocity or 2.2),
+    }
+    dev_data = req.device_data or {
+        "device_hash": "live_browser_sensor",
+        "canvas_signature": True,
+        "webgl_signature": True,
+        "fonts_signature": True,
+    }
+
+    eval_res = RiskEngine.evaluate_session_risk(
+        db=db,
+        user_id=str(current_user.user_id),
+        telemetry=telemetry,
+        device_data=dev_data,
+        ip_address=client_ip,
+        location=loc,
+    )
+
+    total_score = float(eval_res["total_risk_score"])
+    risk_tier = eval_res["risk_tier"]
+    action_taken = eval_res["action_taken"]
+
+    # Record anomalous live telemetry sessions to RiskLog for real-time SOC visibility
+    if risk_tier in (RiskTier.HIGH, RiskTier.MEDIUM) and (
+        total_score >= 0.45 or req.paste_detected or (req.rapid_tab_switches or 0) >= 6
+    ):
+        fc = dict(eval_res.get("feature_contributions") or {})
+        seq_info = fc.get("sequence_intelligence") or {}
+        fc.update(
+            {
+                "triggered_activity": "Live Continuous Browser Biometric & Sequence Anomaly",
+                "detection_reason": (
+                    f"Real-time DOM biometric sensor detected anomalous interaction "
+                    f"(Score: {total_score:.2f}, Intent: {seq_info.get('intent_classification', 'ELEVATED_RISK')})."
+                ),
+                "target_resource": f"Active Seller Session ({' -> '.join((req.navigation_sequence or [])[-3:])})",
+                "verification_method": "Continuous DOM Biometric & Markov Sequence Sensor",
+                "post_ato_interaction_telemetry": {
+                    "session_stage": "LIVE_CONTINUOUS_DOM_STREAM",
+                    "keystroke_dynamics": {
+                        "mean_flight_time_ms": (req.keystroke or {}).get("mean_flight_time", 120.0),
+                        "baseline_flight_time_ms": 120.0,
+                        "mean_dwell_time_ms": (req.keystroke or {}).get("mean_dwell_time", 85.0),
+                        "baseline_dwell_time_ms": 85.0,
+                        "typing_cadence_anomaly": (
+                            "Clipboard Paste / Unfamiliar Cadence" if req.paste_detected else "Live Keystroke Stream"
+                        ),
+                    },
+                    "mouse_biometrics": {
+                        "mean_velocity_px_s": (req.mouse or {}).get("mean_velocity", 450.0),
+                        "trajectory_curvature_index": (req.mouse or {}).get("curvature", 0.2),
+                        "jitter_score": (req.mouse or {}).get("jitter", 0.1),
+                        "interaction_pattern": seq_info.get("intent_classification", "Continuous Monitoring"),
+                    },
+                    "navigation_sequence": req.navigation_sequence or ["LOGIN", "LISTINGS_VIEW"],
+                    "action_velocity_events_per_min": round(float(req.action_velocity or 2.2) * 3.0, 1),
+                },
+            }
+        )
+        risk_log = RiskLog(
+            user_id=current_user.user_id,
+            total_risk_score=total_score,
+            risk_tier=risk_tier,
+            action_taken=action_taken,
+            behavior_deviation_score=eval_res["behavior_deviation_score"],
+            context_deviation_score=eval_res["context_deviation_score"],
+            device_deviation_score=eval_res["device_deviation_score"],
+            ip_address=client_ip,
+            geolocation=loc,
+            feature_contributions=fc,
+        )
+        db.add(risk_log)
+        db.commit()
+        db.refresh(risk_log)
+
+        if risk_tier == RiskTier.HIGH:
+            try:
+                dispatch_suspicious_activity_emails(
+                    db=db,
+                    user=current_user,
+                    risk_log=risk_log,
+                    triggered_activity=fc["triggered_activity"],
+                    detection_reason=fc["detection_reason"],
+                    target_resource=fc["target_resource"],
+                    device_info=request.headers.get("user-agent", "Web Browser") if request else "Web Browser",
+                )
+            except Exception:
+                pass
+    elif risk_tier == RiskTier.LOW and total_score < 0.25:
+        # Smoothly adapt baseline on verified low-risk organic sessions
+        try:
+            BaselineStore.update_baseline_with_session(
+                db=db,
+                user_id=str(current_user.user_id),
+                telemetry=telemetry,
+                device_hash=dev_data.get("device_hash"),
+                ip_address=client_ip,
+                location=loc,
+            )
+        except Exception:
+            pass
+
+    return {
+        "total_risk_score": total_score,
+        "risk_tier": risk_tier.value,
+        "action_taken": action_taken.value,
+        "evaluation_time_ms": eval_res.get("evaluation_time_ms", 12.0),
+    }
+
 
 
 
