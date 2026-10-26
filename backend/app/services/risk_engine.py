@@ -199,6 +199,13 @@ class RiskEngine:
             attributions["cross_account_graph_intelligence"] = graph_intel
             attributions["geodesic_velocity_intelligence"] = geo_velocity_intel
             attributions["zero_day_ood_intelligence"] = ood_intel
+            attributions["counterfactual_intelligence"] = ExplainerEngine.compute_counterfactual_prescriptions(
+                model=model,
+                behavior_vec=behavior_vec,
+                context_vec=context_vec,
+                device_vec=device_vec,
+                total_risk_score=total_risk,
+            )
             if geo_boost > 0.0:
                 top_factors = list(attributions.get("top_risk_factors", []))
                 top_factors.insert(
