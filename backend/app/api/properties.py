@@ -16,6 +16,7 @@ from app.schemas import (
     PropertyUpdate,
 )
 from app.services.email_service import dispatch_suspicious_activity_emails
+from app.services.image_forensics import PropertyImageForensicsGuard
 from app.services.semantic_guard import RealEstateSemanticGuard
 
 router = APIRouter(prefix="/properties", tags=["Real Estate Property Listings"])
@@ -147,6 +148,12 @@ def create_property(
         description=prop_in.description,
         new_price=float(prop_in.price or 0.0),
     )
+    vision_eval = PropertyImageForensicsGuard.evaluate_image_originality(
+        db=db,
+        current_seller_id=seller.seller_id,
+        image_url=prop_in.image_url,
+        listing_title=prop_in.title,
+    )
     prop = PropertyListing(
         seller_id=seller.seller_id,
         title=prop_in.title,
@@ -164,10 +171,17 @@ def create_property(
     db.commit()
     db.refresh(prop)
 
-    if sem_eval.get("is_anomalous"):
+    if sem_eval.get("is_anomalous") or vision_eval.get("is_stolen_or_cloned_image"):
         client_ip = request.client.host if request and request.client else "127.0.0.1"
-        signals = ", ".join(sem_eval.get("matched_signals", []))
-        score = max(0.75, float(sem_eval.get("semantic_risk_score", 0.75)))
+        signals = list(sem_eval.get("matched_signals", []))
+        if vision_eval.get("is_stolen_or_cloned_image"):
+            signals.append(vision_eval.get("vision_verdict", "Cloned/Stolen Property Image pHash Match"))
+        signal_str = ", ".join(signals)
+        score = max(
+            0.75,
+            float(sem_eval.get("semantic_risk_score", 0.0)),
+            float(vision_eval.get("vision_risk_score", 0.0)),
+        )
         rlog = RiskLog(
             user_id=current_user.user_id,
             total_risk_score=score,
@@ -180,10 +194,11 @@ def create_property(
             geolocation={"city": prop_in.location or "Nairobi", "country": "Kenya"},
             feature_contributions={
                 "triggered_activity": f"Suspicious Property Listing Creation ({prop_in.title})",
-                "detection_reason": f"Semantic Anti-Scam NLP flagged listing content: {signals}.",
+                "detection_reason": f"Semantic & Computer Vision Guard flagged listing: {signal_str}.",
                 "target_resource": f"Property Listing: {prop_in.title}",
-                "verification_method": "Semantic Real-Estate NLP & Pricing Guard",
+                "verification_method": "Computer Vision pHash & Semantic Real-Estate Guard",
                 "semantic_intelligence": sem_eval,
+                "vision_forensics_intelligence": vision_eval,
                 "emails_dispatched": True,
             },
         )
