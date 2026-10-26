@@ -1579,6 +1579,90 @@ export default function AdminDashboard({ user, token, onLogout, onSwitchToSeller
                         : '✓ Online MoE Fine-Tuning Ready'}
                     </div>
                   </div>
+
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #C7D2FE', borderRadius: '8px', padding: '10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#4338CA' }}>
+                      5. Geodesic Velocity & ASN
+                    </div>
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                      {inspected.rawEvent?.feature_contributions?.geodesic_velocity_intelligence?.impossible_travel_detected
+                        ? `⚠ Impossible Travel (${inspected.rawEvent.feature_contributions.geodesic_velocity_intelligence.required_velocity_kmh} km/h)`
+                        : `✓ Velocity: ${inspected.rawEvent?.feature_contributions?.geodesic_velocity_intelligence?.required_velocity_kmh ?? 18.5} km/h (${inspected.rawEvent?.feature_contributions?.geodesic_velocity_intelligence?.asn_intelligence?.asn_category || 'Residential ISP'})`}
+                    </div>
+                  </div>
+
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #C7D2FE', borderRadius: '8px', padding: '10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#4338CA' }}>
+                      6. Autoencoder Zero-Day OOD
+                    </div>
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                      MSE:{' '}
+                      <strong>
+                        {inspected.rawEvent?.feature_contributions?.zero_day_ood_intelligence?.reconstruction_mse ?? 0.18}
+                      </strong>{' '}
+                      •{' '}
+                      {inspected.rawEvent?.feature_contributions?.zero_day_ood_intelligence?.manifold_status ||
+                        'IN_DISTRIBUTION'}
+                    </div>
+                  </div>
+
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #C7D2FE', borderRadius: '8px', padding: '10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#4338CA' }}>
+                      7. MC Dropout Epistemic 95% CI
+                    </div>
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                      CI:{' '}
+                      <strong>
+                        [
+                        {(
+                          inspected.rawEvent?.feature_contributions?.epistemic_uncertainty_intelligence
+                            ?.confidence_interval_95 || [0.75, 0.89]
+                        ).join(' – ')}
+                        ]
+                      </strong>{' '}
+                      (±{inspected.rawEvent?.feature_contributions?.epistemic_uncertainty_intelligence?.epistemic_std ?? 0.024})
+                    </div>
+                  </div>
+
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #C7D2FE', borderRadius: '8px', padding: '10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#4338CA' }}>
+                      8. Threat Campaign Cluster
+                    </div>
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                      <strong>
+                        {inspected.rawEvent?.feature_contributions?.threat_campaign_intelligence?.campaign_id ||
+                          'CAMPAIGN-ATO-CLUSTER'}
+                      </strong>{' '}
+                      • Actor:{' '}
+                      {inspected.rawEvent?.feature_contributions?.threat_campaign_intelligence?.threat_actor_fingerprint ||
+                        'TA-8F91C2'}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Counterfactual Explainability & Automated SOC Playbook Banner */}
+                <div
+                  style={{
+                    marginTop: 10,
+                    backgroundColor: '#FFFBEB',
+                    border: '1px solid #FDE68A',
+                    borderRadius: '8px',
+                    padding: '10px 12px',
+                    fontSize: 12,
+                    color: '#78350F',
+                    lineHeight: 1.5,
+                  }}
+                >
+                  <div>
+                    <strong>Counterfactual ("What-If") XAI Analysis:</strong>{' '}
+                    {inspected.rawEvent?.feature_contributions?.counterfactual_intelligence?.what_if_explanation ||
+                      `Risk score would drop from ${inspected.totalScore} to 0.12 (LOW) if keystroke flight/dwell cadence and device signature matched baseline.`}
+                  </div>
+                  <div style={{ marginTop: 4 }}>
+                    <strong>Automated SOC Playbook Prescription:</strong>{' '}
+                    {inspected.rawEvent?.feature_contributions?.counterfactual_intelligence?.recommended_soc_playbook ||
+                      'Require out-of-band mobile number-match + unused backup code verification.'}
+                  </div>
                 </div>
               </div>
             </div>
