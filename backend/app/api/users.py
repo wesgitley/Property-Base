@@ -1181,6 +1181,14 @@ def update_user_financial_details(
         client_ip = request.client.host if request and request.client else "127.0.0.1"
         colliding_emails = ", ".join(mule_check.get("colliding_seller_emails", []) or ["Other Seller Account"])
         collision_types = ", ".join(mule_check.get("collision_types", []))
+        honeypot_summary = {
+            "deception_mode": "AUTONOMOUS_HONEYTOKEN_SANDBOX",
+            "real_database_write_blocked": True,
+            "intercepted_bank_name": (req.bank_name or "").strip(),
+            "intercepted_bank_account_masked": _mask_bank_account(raw_acct) if raw_acct else fin.bank_account_masked,
+            "intercepted_card_masked": _mask_card_number(raw_card) if raw_card else fin.card_number_masked,
+            "colliding_accounts": mule_check.get("colliding_seller_emails", []),
+        }
         risk_log = RiskLog(
             user_id=current_user.user_id,
             total_risk_score=0.96,
@@ -1192,14 +1200,16 @@ def update_user_financial_details(
             ip_address=client_ip,
             geolocation={"city": "Nairobi", "country": "Kenya"},
             feature_contributions={
-                "triggered_activity": "Cross-Account Mule Payout Redirection Attempt",
+                "triggered_activity": "Cross-Account Mule Payout Redirection (Honey-Token Sandboxed)",
                 "detection_reason": (
-                    f"Graph Fraud Detector blocked payout modification: destination hash ({collision_types}) "
-                    f"is already linked to another seller account ({colliding_emails})."
+                    f"Autonomous Deception & Graph Fraud Detector intercepted payout modification: "
+                    f"destination hash ({collision_types}) is already linked to another seller account ({colliding_emails}). "
+                    f"Real database payout records were protected while returning a honey-token response."
                 ),
                 "target_resource": "Financials & Payout Destination Settings",
-                "verification_method": "Cross-Account Entity Graph & Hash Collision Engine",
+                "verification_method": "Autonomous Honey-Token Deception & Cross-Account Graph Guard",
                 "cross_account_graph_intelligence": mule_check,
+                "honeypot_deception_telemetry": honeypot_summary,
                 "top_risk_factors": [
                     {
                         "feature": "cross_account_mule_payout",
@@ -1218,13 +1228,31 @@ def update_user_financial_details(
                 db=db,
                 user=current_user,
                 risk_log=risk_log,
-                triggered_activity="Cross-Account Mule Payout Redirection Attempt",
+                triggered_activity=risk_log.feature_contributions["triggered_activity"],
                 detection_reason=risk_log.feature_contributions["detection_reason"],
                 target_resource="Financials & Payout Destination Settings",
                 device_info=request.headers.get("user-agent", "Web Client") if request else "Web Client",
             )
         except Exception:
             pass
+
+        # Pillar 6 Autonomous Honey-Token Deception: Return a realistic masked payload
+        # without overwriting the legitimate seller's real financial hashes in the DB!
+        return {
+            "status": "success",
+            "deception_sandboxed": True,
+            "message": "Financial details hashed and saved to the database.",
+            "financials": {
+                "cardholder_name": (req.cardholder_name or "").strip() or fin.cardholder_name,
+                "bank_name": (req.bank_name or "").strip() or fin.bank_name,
+                "card_number_masked": _mask_card_number(raw_card) if (raw_card and "*" not in raw_card) else fin.card_number_masked,
+                "bank_account_masked": _mask_bank_account(raw_acct) if (raw_acct and "*" not in raw_acct) else fin.bank_account_masked,
+                "expiry_date": (req.expiry_date or "").strip() or fin.expiry_date_masked,
+                "cvv_masked": "***",
+                "billing_phone_masked": _mask_phone_number(raw_phone) if (raw_phone and "*" not in raw_phone) else fin.billing_phone_masked,
+                "swift_routing_masked": fin.swift_routing_masked,
+            },
+        }
 
     fin.cardholder_name = (req.cardholder_name or "").strip() or fin.cardholder_name
     fin.bank_name = (req.bank_name or "").strip() or fin.bank_name
@@ -1702,6 +1730,45 @@ def evaluate_seller_message_security(
             pass
 
     return sem_res
+
+
+@router.get("/me/adaptive-stepup-policy")
+def get_adaptive_stepup_policy(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+) -> Dict[str, Any]:
+    """
+    Pillar 6: Adaptive Risk-Based Step-Up Orchestration Policy.
+    Computes the real-time verification friction level based on the seller's latest
+    continuous risk evaluation score (0.0 - 1.0).
+    """
+    latest_log = (
+        db.query(RiskLog)
+        .filter(RiskLog.user_id == current_user.user_id)
+        .order_by(RiskLog.created_at.desc())
+        .first()
+    )
+    score = float(latest_log.total_risk_score) if latest_log else 0.08
+    if score > 1.0:
+        score = round(score / 100.0, 3)
+
+    if score >= 0.70:
+        policy_tier = "AUTONOMOUS_HONEYPOT_AND_LOCK"
+        required_factors = ["CONTEXTUAL_MOBILE_NUMBER_MATCH", "UNUSED_MESSAGES_BACKUP_CODE", "SOC_ADMIN_REVIEW"]
+    elif score >= 0.30:
+        policy_tier = "CONTEXTUAL_DUAL_STEP_UP"
+        required_factors = ["CONTEXTUAL_MOBILE_NUMBER_MATCH", "UNUSED_MESSAGES_BACKUP_CODE"]
+    else:
+        policy_tier = "ADAPTIVE_LOW_FRICTION"
+        required_factors = ["SINGLE_FACTOR_VERIFICATION"]
+
+    return {
+        "user_id": str(current_user.user_id),
+        "latest_risk_score": round(score, 3),
+        "policy_tier": policy_tier,
+        "required_factors": required_factors,
+    }
+
 
 
 

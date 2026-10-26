@@ -1522,6 +1522,64 @@ export default function AdminDashboard({ user, token, onLogout, onSwitchToSeller
                       'This event captures post-authentication interaction anomalies (keystroke flight/dwell shift, high-velocity navigation to financial payouts or listing management, and failed step-up verification) so the Mixture-of-Experts gating network learns how malicious actors behave immediately after compromising credentials.'}
                   </div>
                 </div>
+
+                {/* Section 5: 6-Pillar Autonomous AI Defense & Honey-Token Deception Telemetry */}
+                <div
+                  style={{
+                    marginTop: 12,
+                    display: 'grid',
+                    gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))',
+                    gap: '10px',
+                  }}
+                >
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #C7D2FE', borderRadius: '8px', padding: '10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#4338CA' }}>
+                      1. Markov Sequence Trajectory
+                    </div>
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                      Intent:{' '}
+                      <strong>
+                        {inspected.rawEvent?.feature_contributions?.sequence_intelligence?.intent_classification ||
+                          (inspected.riskTier === 'HIGH' ? 'MALICIOUS_POST_ATO_ESCALATION' : 'CONTINUOUS_MONITORING')}
+                      </strong>
+                    </div>
+                  </div>
+
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #C7D2FE', borderRadius: '8px', padding: '10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#4338CA' }}>
+                      2. Cross-Account Fraud Graph
+                    </div>
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                      {inspected.rawEvent?.feature_contributions?.cross_account_graph_intelligence?.is_mule_payout_collision
+                        ? '⚠ Shared Mule Payout Hash Collision Detected'
+                        : inspected.rawEvent?.feature_contributions?.cross_account_graph_intelligence?.cross_account_ip_reuse
+                        ? '⚠ Cross-Account Attacker IP Reuse Detected'
+                        : '✓ Isolated Account Entity Graph'}
+                    </div>
+                  </div>
+
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #C7D2FE', borderRadius: '8px', padding: '10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#4338CA' }}>
+                      3. Semantic Anti-Scam NLP Guard
+                    </div>
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                      {inspected.rawEvent?.feature_contributions?.semantic_intelligence?.is_anomalous
+                        ? `⚠ ${inspected.rawEvent.feature_contributions.semantic_intelligence.matched_signals?.join(', ')}`
+                        : '✓ Listing & Message Content Verified'}
+                    </div>
+                  </div>
+
+                  <div style={{ backgroundColor: '#FFFFFF', border: '1px solid #C7D2FE', borderRadius: '8px', padding: '10px' }}>
+                    <div style={{ fontSize: 11, fontWeight: 800, color: '#4338CA' }}>
+                      4. Honey-Token & Active Learning
+                    </div>
+                    <div style={{ fontSize: 11, color: '#334155', marginTop: 3 }}>
+                      {inspected.rawEvent?.feature_contributions?.honeypot_deception_telemetry?.real_database_write_blocked
+                        ? '🛡 Honey-Token Active (Real DB Protected)'
+                        : '✓ Online MoE Fine-Tuning Ready'}
+                    </div>
+                  </div>
+                </div>
               </div>
             </div>
 
