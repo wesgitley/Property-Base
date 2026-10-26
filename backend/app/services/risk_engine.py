@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 from app.ml.deviation_layer import DeviationLayer
 from app.ml.explainability import ExplainerEngine
 from app.ml.moe_architecture import LateFusionNetwork
+from app.ml.sequence_model import PostLoginSequenceScorer
 from app.models import RiskTier, SecurityAction, User, UserBehaviorBaseline
 from app.services.baseline_store import BaselineStore
 
@@ -137,11 +138,21 @@ class RiskEngine:
                 pred, embeddings = model(b_tensor, c_tensor, d_tensor)
                 neural_risk = float(pred.item())
 
-            # Fuse neural risk with physical deviation constraints to enforce strict boundary safety
-            stream_max = max(behavior_dev, context_dev, device_dev)
-            stream_mean = (behavior_dev * 0.35) + (context_dev * 0.35) + (device_dev * 0.30)
+            # 4b. Post-Login Behavioral Sequence Modeling (Markov & Temporal Sequence Expert)
+            nav_seq = telemetry.get("navigation_sequence") or ["LOGIN", "LISTINGS_VIEW"]
+            seq_score, seq_diagnostics = PostLoginSequenceScorer.evaluate_sequence(
+                navigation_sequence=nav_seq,
+                seconds_since_login=float(telemetry.get("seconds_since_login", 45.0)),
+                paste_detected_on_sensitive_field=bool(telemetry.get("paste_detected", False)),
+                webdriver_detected=bool(device_data.get("webdriver_detected", False)),
+                rapid_tab_switches=int(telemetry.get("rapid_tab_switches", 0)),
+            )
+
+            # Fuse neural risk with physical deviation constraints and temporal sequence risk
+            stream_max = max(behavior_dev, context_dev, device_dev, seq_score)
+            stream_mean = (behavior_dev * 0.30) + (context_dev * 0.30) + (device_dev * 0.20) + (seq_score * 0.20)
             heuristic_risk = 0.50 * stream_max + 0.50 * stream_mean
-            total_risk = round(float(np.clip(0.60 * neural_risk + 0.40 * heuristic_risk, 0.0, 1.0)), 3)
+            total_risk = round(float(np.clip(0.55 * neural_risk + 0.45 * heuristic_risk, 0.0, 1.0)), 3)
 
             # 5. SHAP Interpretability & Feature Attributions (NFR-05)
             attributions = ExplainerEngine.compute_attributions(
@@ -152,6 +163,18 @@ class RiskEngine:
                 feature_names=FEATURE_NAMES,
                 baseline_pred=0.15,
             )
+            attributions["sequence_intelligence"] = seq_diagnostics
+            if seq_score >= 0.45:
+                top_factors = list(attributions.get("top_risk_factors", []))
+                top_factors.insert(
+                    0,
+                    {
+                        "feature": "post_login_sequence_anomaly",
+                        "display_name": f"Post-Login Trajectory ({seq_diagnostics['intent_classification']})",
+                        "impact": seq_score,
+                    },
+                )
+                attributions["top_risk_factors"] = top_factors[:6]
 
             # 6. Decision Layer (FR-03 Risk Thresholds)
             # Low Risk: < 0.3
