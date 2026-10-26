@@ -394,3 +394,155 @@ def generate_backup_codes(count: int = 8) -> List[str]:
 def hash_secret_code(code: str) -> str:
     """Hashes an OTP or backup code using SHA-256 for secure storage (NFR-02)."""
     return hashlib.sha256(code.strip().encode("utf-8")).hexdigest()
+
+
+def dispatch_suspicious_activity_emails(
+    db: Any,
+    user: Any,
+    risk_log: Any,
+    triggered_activity: str,
+    detection_reason: str,
+    target_resource: str = "Account Session",
+    device_info: str = "Web Browser Session",
+) -> Dict[str, Any]:
+    """
+    Dispatches real-time email notifications whenever suspicious activity is detected:
+    1) To the Property Seller (`user.email`) anytime suspicious activity is detected in their account.
+    2) To the System Administrator (`baseadmin99@gmail.com` and any ADMIN users in DB) with full
+       forensic details about what led to the session being flagged, risk score (0.0 - 1.0),
+       location, and post-ATO behavioral indicators.
+    """
+    import threading
+    from app.models import User, UserRole
+
+    now_eat = datetime.now(timezone.utc)
+    timestamp_str = now_eat.strftime("%Y-%m-%d %H:%M:%S UTC")
+
+    raw_score = float(getattr(risk_log, "total_risk_score", 0.75) or 0.75)
+    norm_score = round(raw_score / 100.0 if raw_score > 1.0 else raw_score, 3)
+    tier_str = (
+        risk_log.risk_tier.value
+        if hasattr(risk_log.risk_tier, "value")
+        else str(getattr(risk_log, "risk_tier", "HIGH"))
+    )
+    action_str = (
+        risk_log.action_taken.value
+        if hasattr(risk_log.action_taken, "value")
+        else str(getattr(risk_log, "action_taken", "STEP_UP_MFA"))
+    )
+    bio_score = round(float(getattr(risk_log, "behavior_deviation_score", 0.0) or 0.0), 3)
+    ctx_score = round(float(getattr(risk_log, "context_deviation_score", 0.0) or 0.0), 3)
+    dev_score = round(float(getattr(risk_log, "device_deviation_score", 0.0) or 0.0), 3)
+
+    geo = getattr(risk_log, "geolocation", None) or {}
+    city = geo.get("city") or "Nairobi"
+    country = geo.get("country") or "Kenya"
+    ip_addr = getattr(risk_log, "ip_address", None) or "127.0.0.1"
+    location_str = f"{city}, {country} (IP: {ip_addr})"
+
+    seller_email = getattr(user, "email", None) or "seller@realestate.com"
+    seller_name = (
+        f"{getattr(user, 'first_name', '') or ''} {getattr(user, 'last_name', '') or ''}".strip()
+        or getattr(user, "username", None)
+        or seller_email
+    )
+
+    # Collect Admin emails (always include baseadmin99@gmail.com + any ADMIN accounts in DB)
+    admin_emails = {"baseadmin99@gmail.com"}
+    try:
+        if db is not None:
+            admins = db.query(User).filter(User.role == UserRole.ADMIN).all()
+            for adm in admins:
+                if adm.email:
+                    admin_emails.add(adm.email.strip().lower())
+    except Exception:
+        pass
+
+    seller_subject = f"Property Base Security Alert: Suspicious Activity Detected ({norm_score:.2f} {tier_str})"
+    seller_body = (
+        f"Hello {seller_name},\n\n"
+        f"Our Multi-Expert Account Takeover (ATO) Defense System detected suspicious activity on your Property Base seller account ({seller_email}).\n\n"
+        f"• What Triggered This Alert: {triggered_activity}\n"
+        f"• Reason Flagged: {detection_reason}\n"
+        f"• Targeted Resource: {target_resource}\n"
+        f"• MoE Risk Score (0.0 - 1.0): {norm_score:.2f} ({tier_str} RISK)\n"
+        f"• Automated Protection Enforced: {action_str}\n"
+        f"• Event Location & IP: {location_str}\n"
+        f"• Device / Session Context: {device_info}\n"
+        f"• Timestamp: {timestamp_str}\n\n"
+        f"If this was not you, your account is protected by Step-Up MFA and Zero-Trust session controls. Please review your account security settings immediately."
+    )
+
+    admin_subject = (
+        f"[SOC {tier_str} RISK ALERT] Score {norm_score:.2f} — {seller_email} ({triggered_activity})"
+    )
+    admin_body = (
+        f"SOC ADMINISTRATOR LIVE ATO ALERT\n\n"
+        f"A suspicious session/activity has been flagged by the Mixture-of-Experts (MoE) ATO Engine:\n\n"
+        f"1. TARGET USER IDENTITY:\n"
+        f"   • User: {seller_name} ({seller_email})\n"
+        f"   • User ID: {getattr(user, 'user_id', 'N/A')}\n"
+        f"   • Role: {getattr(user.role, 'value', str(getattr(user, 'role', 'SELLER')))}\n\n"
+        f"2. WHAT TRIGGERED THE SUSPICIOUS ACTIVITY DETECTION:\n"
+        f"   • Triggered Action: {triggered_activity}\n"
+        f"   • Target Resource: {target_resource}\n"
+        f"   • Diagnostic Reason: {detection_reason}\n"
+        f"   • Automated Engine Decision: {action_str}\n\n"
+        f"3. RISK SCORE (0.0 - 1.0) & STREAM DEVIATIONS:\n"
+        f"   • Total Risk Score: {norm_score:.2f} ({tier_str})\n"
+        f"   • Behavioral Biometrics Deviation: {bio_score:.2f}\n"
+        f"   • Contextual / Geo-Velocity Deviation: {ctx_score:.2f}\n"
+        f"   • Device Fingerprint Deviation: {dev_score:.2f}\n\n"
+        f"4. LOCATION & NETWORK TELEMETRY:\n"
+        f"   • Location: {city}, {country}\n"
+        f"   • IP Address: {ip_addr}\n"
+        f"   • Device Context: {device_info}\n"
+        f"   • Timestamp: {timestamp_str}\n\n"
+        f"Open the Property Base Admin Dashboard -> System Audit Trail and click on this event to inspect the full Post-ATO Malicious Interaction & Model Learning telemetry."
+    )
+
+    def _send_async():
+        try:
+            SimulatedMailbox.send_email(
+                to_email=seller_email,
+                subject=seller_subject,
+                body_text=seller_body,
+                category="SELLER_SUSPICIOUS_ACTIVITY_ALERT",
+                payload_data={
+                    "risk_id": str(getattr(risk_log, "risk_id", "")),
+                    "risk_score": norm_score,
+                    "risk_tier": tier_str,
+                    "triggered_activity": triggered_activity,
+                    "location": location_str,
+                },
+            )
+        except Exception as exc:
+            logger.warning(f"Failed to send seller suspicious activity email to {seller_email}: {exc}")
+
+        for adm_email in admin_emails:
+            try:
+                SimulatedMailbox.send_email(
+                    to_email=adm_email,
+                    subject=admin_subject,
+                    body_text=admin_body,
+                    category="ADMIN_SOC_HIGH_RISK_ALERT",
+                    payload_data={
+                        "risk_id": str(getattr(risk_log, "risk_id", "")),
+                        "target_user": seller_email,
+                        "risk_score": norm_score,
+                        "risk_tier": tier_str,
+                        "triggered_activity": triggered_activity,
+                        "detection_reason": detection_reason,
+                        "location": location_str,
+                    },
+                )
+            except Exception as exc:
+                logger.warning(f"Failed to send admin SOC alert email to {adm_email}: {exc}")
+
+    threading.Thread(target=_send_async, daemon=True).start()
+
+    return {
+        "seller_notified": seller_email,
+        "admins_notified": sorted(list(admin_emails)),
+        "notified_at": timestamp_str,
+    }

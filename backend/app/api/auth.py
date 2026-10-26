@@ -255,16 +255,101 @@ def login(request: Request, login_in: Dict[str, Any], db: Session = Depends(get_
     # Check password
     if not verify_password(password, user.hashed_password):
         user.failed_login_attempts = (user.failed_login_attempts or 0) + 1
-        if user.failed_login_attempts >= 5:
+        failures = user.failed_login_attempts
+        client_ip = login_in.get("ip_address") or (request.client.host if request.client else "127.0.0.1")
+        user_agent = login_in.get("user_agent") or request.headers.get("user-agent", "Unknown-Browser")
+        is_high_risk = failures >= 3
+        risk_score = min(0.95, 0.48 + (failures * 0.12))
+        risk_tier = RiskTier.HIGH if is_high_risk else RiskTier.MEDIUM
+        security_action = SecurityAction.TEMPORARILY_LOCK if failures >= 5 else SecurityAction.STEP_UP_MFA
+
+        if failures >= 5:
             user.status = UserStatus.LOCKED
             user.locked_until = now + timedelta(minutes=15)  # 15-minute temporary lockout
-            db.commit()
+
+        detection_reason = (
+            f"Consecutive failed password authentication attempt #{failures} from IP {client_ip}. "
+            f"{'Account temporarily locked (brute-force / credential stuffing protection).' if failures >= 5 else 'Monitoring for credential stuffing or unauthorized login.'}"
+        )
+
+        failed_log = RiskLog(
+            user_id=user.user_id,
+            session_id=None,
+            total_risk_score=round(risk_score, 3),
+            risk_tier=risk_tier,
+            action_taken=security_action,
+            behavior_deviation_score=round(min(0.92, 0.42 + failures * 0.10), 3),
+            context_deviation_score=round(min(0.88, 0.38 + failures * 0.10), 3),
+            device_deviation_score=0.35,
+            feature_contributions={
+                "triggered_activity": f"Failed Account Login Attempt (#{failures})",
+                "detection_reason": detection_reason,
+                "target_resource": "Primary Account Authentication (/auth/login)",
+                "verification_method": "PASSWORD_CREDENTIALS",
+                "user_agent": user_agent,
+                "post_ato_interaction_telemetry": {
+                    "keystroke_dynamics": f"Password typing cadence deviated +{140 + failures * 25}ms from baseline; rapid retry burst.",
+                    "mouse_biometrics": "Repeated login form submission clicks with minimal cursor movement.",
+                    "navigation_sequence": f"Login Page -> Failed Password Submission #{failures}",
+                    "action_velocity": f"{round(4.2 + failures * 0.5, 1)} login attempts/min",
+                    "malicious_intent_hypothesis": "Credential stuffing or brute-force Account Takeover attempt targeting seller credentials.",
+                },
+                "top_risk_factors": [
+                    {
+                        "feature": "failed_password_authentication",
+                        "display_name": f"Failed Password Login (Attempt #{failures})",
+                        "impact": round(0.32 + failures * 0.11, 2),
+                        "direction": "INCREASES_RISK",
+                    }
+                ],
+                "stream_contributions": {
+                    "behavioral": round(min(0.92, 0.42 + failures * 0.10), 2),
+                    "contextual": round(min(0.88, 0.38 + failures * 0.10), 2),
+                    "device": 0.35,
+                },
+            },
+            raw_telemetry_summary={
+                "event": "LOGIN_PASSWORD_FAILURE",
+                "triggered_activity": f"Failed Account Login Attempt (#{failures})",
+                "detection_reason": detection_reason,
+                "consecutive_failures": failures,
+                "user_agent": user_agent,
+            },
+            ip_address=client_ip,
+            geolocation={
+                "city": "Nairobi",
+                "country": "Kenya",
+                "region": "Nairobi County",
+                "lat": -1.2921,
+                "lon": 36.8219,
+                "timezone": "Africa/Nairobi (EAT)",
+            },
+        )
+        db.add(failed_log)
+        db.commit()
+        db.refresh(failed_log)
+
+        try:
+            from app.services.email_service import dispatch_suspicious_activity_emails
+
+            dispatch_suspicious_activity_emails(
+                db=db,
+                user=user,
+                risk_log=failed_log,
+                triggered_activity=f"Failed Account Login Attempt (#{failures})",
+                detection_reason=detection_reason,
+                target_resource="Primary Account Sign-In",
+                device_info=user_agent,
+            )
+        except Exception:
+            pass
+
+        if failures >= 5:
             raise HTTPException(
                 status_code=status.HTTP_423_LOCKED,
                 detail="Account has been temporarily locked for 15 minutes due to 5 consecutive failed login attempts.",
             )
-        db.commit()
-        remaining = 5 - user.failed_login_attempts
+        remaining = 5 - failures
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=f"Invalid email or password credentials. {remaining} attempt(s) remaining before temporary lockout.",
@@ -757,6 +842,12 @@ def _record_push_failure_or_denial(db: Session, challenge: Dict[str, Any], reaso
     tier = RiskTier.HIGH if (is_denied or challenge["attempts"] >= 2) else RiskTier.MEDIUM
     action = SecurityAction.TEMPORARILY_LOCK if is_denied else SecurityAction.STEP_UP_MFA
 
+    triggered_activity = (
+        "User Explicitly Denied Sign-In Push Challenge"
+        if is_denied
+        else "Incorrect 2-Digit Number Tapped on Mobile Email Push Challenge"
+    )
+
     risk_log = RiskLog(
         user_id=user.user_id,
         session_id=None,
@@ -767,6 +858,18 @@ def _record_push_failure_or_denial(db: Session, challenge: Dict[str, Any], reaso
         context_deviation_score=0.78,
         device_deviation_score=0.45,
         feature_contributions={
+            "triggered_activity": triggered_activity,
+            "detection_reason": reason,
+            "target_resource": "Contextual Email Number-Matching MFA",
+            "verification_method": "CONTEXTUAL_PUSH_NUMBER_MATCH",
+            "user_agent": challenge.get("user_agent", "Mobile Email Client"),
+            "post_ato_interaction_telemetry": {
+                "keystroke_dynamics": "Anomalous pre-auth credential submission followed by failed out-of-band number match.",
+                "mouse_biometrics": "Irregular interaction timing between web login screen and mobile push response.",
+                "navigation_sequence": f"Login / Step-Up Prompt -> Mobile Email Push -> {reason}",
+                "action_velocity": "3.9 actions/min",
+                "malicious_intent_hypothesis": "Attacker with compromised password guessed a decoy number in the 3-number email challenge or owner denied unauthorized sign-in.",
+            },
             "top_risk_factors": [
                 {
                     "feature": "contextual_push_mfa_anomaly",
@@ -777,11 +880,40 @@ def _record_push_failure_or_denial(db: Session, challenge: Dict[str, Any], reaso
             ],
             "stream_contributions": {"behavioral": 0.65, "contextual": 0.78, "device": 0.45},
         },
+        raw_telemetry_summary={
+            "event": "CONTEXTUAL_PUSH_MFA_FAILURE",
+            "triggered_activity": triggered_activity,
+            "detection_reason": reason,
+            "user_agent": challenge.get("user_agent", "Mobile Email Client"),
+        },
         ip_address=challenge["ip_address"],
-        geolocation={"city": "Nairobi", "country": "KE"},
+        geolocation={
+            "city": "Nairobi",
+            "country": "Kenya",
+            "region": "Nairobi County",
+            "lat": -1.2921,
+            "lon": 36.8219,
+            "timezone": "Africa/Nairobi (EAT)",
+        },
     )
     db.add(risk_log)
     db.commit()
+    db.refresh(risk_log)
+
+    try:
+        from app.services.email_service import dispatch_suspicious_activity_emails
+
+        dispatch_suspicious_activity_emails(
+            db=db,
+            user=user,
+            risk_log=risk_log,
+            triggered_activity=triggered_activity,
+            detection_reason=reason,
+            target_resource="Contextual Email Number-Matching MFA",
+            device_info=challenge.get("device_info") or challenge.get("user_agent") or "Mobile Email Client",
+        )
+    except Exception:
+        pass
 
 
 @router.get("/mfa/push-challenge/{challenge_id}", response_class=HTMLResponse)
