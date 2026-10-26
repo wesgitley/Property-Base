@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from sqlalchemy.orm import Session
 
+from app.ml.autoencoder_ood import ZeroDayReconstructionAutoencoder
 from app.ml.deviation_layer import DeviationLayer
 from app.ml.explainability import ExplainerEngine
 from app.ml.moe_architecture import LateFusionNetwork
@@ -168,9 +169,17 @@ class RiskEngine:
             )
             geo_boost = float(geo_velocity_intel.get("geodesic_risk_boost", 0.0))
 
-            # Fuse neural risk with physical deviation constraints, temporal sequence risk, and fraud graph boost
-            stream_max = max(behavior_dev, context_dev, device_dev, seq_score)
-            stream_mean = (behavior_dev * 0.30) + (context_dev * 0.30) + (device_dev * 0.20) + (seq_score * 0.20)
+            # 4e. Deep Autoencoder Out-of-Distribution (Zero-Day Anomaly) Detector
+            ood_intel = ZeroDayReconstructionAutoencoder.evaluate_ood_anomaly(
+                behavior_vec=behavior_vec,
+                context_vec=context_vec,
+                device_vec=device_vec,
+            )
+            ood_score = float(ood_intel.get("ood_anomaly_score", 0.0))
+
+            # Fuse neural risk with physical deviation constraints, temporal sequence risk, OOD score, and fraud graph boost
+            stream_max = max(behavior_dev, context_dev, device_dev, seq_score, ood_score)
+            stream_mean = (behavior_dev * 0.25) + (context_dev * 0.25) + (device_dev * 0.20) + (seq_score * 0.15) + (ood_score * 0.15)
             heuristic_risk = 0.50 * stream_max + 0.50 * stream_mean
             total_risk = round(
                 float(np.clip(0.55 * neural_risk + 0.45 * heuristic_risk + graph_boost + geo_boost, 0.0, 1.0)),
@@ -189,6 +198,7 @@ class RiskEngine:
             attributions["sequence_intelligence"] = seq_diagnostics
             attributions["cross_account_graph_intelligence"] = graph_intel
             attributions["geodesic_velocity_intelligence"] = geo_velocity_intel
+            attributions["zero_day_ood_intelligence"] = ood_intel
             if geo_boost > 0.0:
                 top_factors = list(attributions.get("top_risk_factors", []))
                 top_factors.insert(
