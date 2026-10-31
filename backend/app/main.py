@@ -57,6 +57,21 @@ def _ensure_engine_auth_schema(target_engine):
 
         if "users" in table_names:
             user_cols = {c["name"] for c in insp.get_columns("users")}
+            if "password_hash" not in user_cols:
+                with target_engine.begin() as conn:
+                    conn.execute(text("ALTER TABLE users ADD COLUMN password_hash VARCHAR(255)"))
+                user_cols.add("password_hash")
+                logger.info("Added password_hash column to users table.")
+            if "hashed_password" in user_cols and "password_hash" in user_cols:
+                with target_engine.begin() as conn:
+                    conn.execute(
+                        text(
+                            "UPDATE users SET password_hash = hashed_password "
+                            "WHERE (password_hash IS NULL OR password_hash = '') AND hashed_password IS NOT NULL"
+                        )
+                    )
+                    conn.execute(text("ALTER TABLE users DROP COLUMN hashed_password"))
+                logger.info("Migrated and dropped legacy hashed_password column from users table.")
             if "messages_passcode_hash" not in user_cols:
                 with target_engine.begin() as conn:
                     conn.execute(text("ALTER TABLE users ADD COLUMN messages_passcode_hash VARCHAR(255)"))
@@ -83,11 +98,10 @@ def _ensure_engine_auth_schema(target_engine):
 
 def ensure_auth_tables_schema():
     _ensure_engine_auth_schema(engine)
-    try:
-        from app.core.database import fallback_engine
-        _ensure_engine_auth_schema(fallback_engine)
-    except Exception:
-        pass
+
+
+def _is_bcrypt_hash(val: str) -> bool:
+    return bool(val and val.startswith(("$2b$", "$2a$", "$2y$")))
 
 
 def _is_sha256_hex(val: str) -> bool:
@@ -453,19 +467,12 @@ def seed_initial_demo_data(db: Session):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Ensure tables exist and match current schema, then seed data
+    # Startup: Ensure tables exist and match current schema in Supabase PostgreSQL, then seed data
     ensure_auth_tables_schema()
     try:
         Base.metadata.create_all(bind=engine)
     except Exception as exc:
-        logger.warning(f"Primary engine table creation warning: {exc}")
-
-    # Use get_db's failover-safe session for startup seeding
-    from app.core.database import FallbackSessionLocal, fallback_engine
-    try:
-        Base.metadata.create_all(bind=fallback_engine)
-    except Exception:
-        pass
+        logger.warning(f"Supabase PostgreSQL table creation warning: {exc}")
 
     try:
         db = SessionLocal()
@@ -474,14 +481,7 @@ async def lifespan(app: FastAPI):
         ensure_sensitive_data_hashed_in_db(db)
         db.close()
     except Exception as exc:
-        logger.warning(f"Primary DB unreachable during startup seed ({exc}); seeding local fallback DB.")
-        try:
-            fb_db = FallbackSessionLocal()
-            seed_initial_demo_data(fb_db)
-            ensure_sensitive_data_hashed_in_db(fb_db)
-            fb_db.close()
-        except Exception as fb_exc:
-            logger.warning(f"Fallback DB seed warning: {fb_exc}")
+        logger.warning(f"Supabase PostgreSQL startup seed warning: {exc}")
 
     # Pre-warm ML model
     RiskEngine.get_model()

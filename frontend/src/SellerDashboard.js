@@ -139,7 +139,7 @@ export default function SellerDashboard({
   const [activeNav, setActiveNav] = useState('listings');
 
   // Identify user storage key so each account has isolated listings, offers & listing MFA codes
-  const userKey = user?.email || user?.username || 'new_seller';
+  const userKey = user?.user_id || user?.email || user?.username || 'new_seller';
   const storageKeyListings = `pb_listings_${userKey}`;
   const storageKeyOffers = `pb_offers_${userKey}`;
   const storageKeyListingMfa = `pb_listing_mfa_${userKey}`;
@@ -2077,6 +2077,10 @@ export default function SellerDashboard({
   const portfolioValue = listings
     .filter((l) => l.status !== 'SOLD')
     .reduce((acc, curr) => acc + curr.price, 0);
+  const totalBuyerImpressions = listings.reduce(
+    (acc, curr) => acc + (Number(curr.views_count) || 0),
+    0
+  );
 
   return (
     <div style={styles.appWrapper}>
@@ -2238,11 +2242,6 @@ export default function SellerDashboard({
             >
               <Plus size={18} />
               <span>Add New Property</span>
-            </button>
-
-            <button style={styles.iconCircleBtn} title="Notifications">
-              <Bell size={18} color="#475569" />
-              {pendingOffersCount > 0 && <span style={styles.notifDot} />}
             </button>
           </div>
         </header>
@@ -2622,7 +2621,11 @@ export default function SellerDashboard({
                   <Eye size={22} color="#2563EB" />
                 </div>
                 <div>
-                  <div style={styles.statNumber}>10.8k</div>
+                  <div style={styles.statNumber}>
+                    {totalBuyerImpressions >= 10000
+                      ? `${(totalBuyerImpressions / 1000).toFixed(1)}k`
+                      : totalBuyerImpressions.toLocaleString()}
+                  </div>
                   <div style={styles.statLabel}>Total Buyer Impressions</div>
                 </div>
               </div>
@@ -5125,78 +5128,36 @@ export default function SellerDashboard({
 
                   {/* Part 2: Past Payment Receipts for Sold Properties */}
                   {(() => {
-                    // Combine any user listings marked SOLD with historical sold property receipts
-                    const dynamicSoldReceipts = listings
-                      .filter((l) => l.status === 'SOLD')
-                      .map((l, idx) => {
-                        const gross = Number(l.price) || 950000;
-                        const fee = Math.round(gross * 0.015);
-                        return {
-                          id: `sold_listing_${l.id}`,
-                          receipt_no: `RCP-2026-${8840 + idx}`,
-                          date_settled: 'Oct 20, 2026',
-                          property_title: l.title,
-                          property_location: l.location,
-                          sale_amount: gross,
-                          escrow_fee: fee,
-                          net_payout: gross - fee,
-                          buyer_name: 'Verified Property Base Buyer',
-                          buyer_phone: '+254 719 482 310',
-                          buyer_account: '019283746519',
-                          wire_reference: `ESCROW-${String(l.id).slice(-4).toUpperCase()}9821`,
-                          status: 'SETTLED & DISBURSED',
-                        };
-                      });
-
-                    const historicalSoldReceipts = [
-                      {
-                        id: 'hist_rcp_1',
-                        receipt_no: 'RCP-2026-09481',
-                        date_settled: 'Oct 14, 2026',
-                        property_title: 'Lavington Contemporary 5-Bed Manor',
-                        property_location: 'Lavington, Nairobi',
-                        sale_amount: 1650000,
-                        escrow_fee: 24750,
-                        net_payout: 1625250,
-                        buyer_name: 'Jonathan & Claire Sterling',
-                        buyer_phone: '+254 722 910 418',
-                        buyer_account: '014098231109',
-                        wire_reference: 'WIRE-KCB99283104',
+                    // New users start with 0 payment receipts until they start posting their listings
+                    const allReceipts = listings.map((l, idx) => {
+                      const matchedOffer = offers.find(
+                        (o) => o.property_id === l.id && (o.status === 'ACCEPTED' || o.status === 'PENDING')
+                      );
+                      const fallbackBuyer = SYNTHETIC_BUYER_POOL[idx % SYNTHETIC_BUYER_POOL.length];
+                      const gross = Number(matchedOffer?.offer_amount || l.price) || 950000;
+                      const fee = Math.round(gross * 0.015);
+                      return {
+                        id: `sold_listing_${l.id}`,
+                        receipt_no: `RCP-2026-${8840 + idx}`,
+                        date_settled: l.created_at && l.created_at !== 'Just now'
+                          ? l.created_at
+                          : new Date().toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            }),
+                        property_title: l.title,
+                        property_location: l.location,
+                        sale_amount: gross,
+                        escrow_fee: fee,
+                        net_payout: gross - fee,
+                        buyer_name: matchedOffer?.client_name || fallbackBuyer.name,
+                        buyer_phone: matchedOffer?.client_phone || fallbackBuyer.phone,
+                        buyer_account: `01928374${6510 + idx}`,
+                        wire_reference: `ESCROW-${String(l.id).slice(-4).toUpperCase()}${9820 + idx}`,
                         status: 'SETTLED & DISBURSED',
-                      },
-                      {
-                        id: 'hist_rcp_2',
-                        receipt_no: 'RCP-2026-08712',
-                        date_settled: 'Sep 28, 2026',
-                        property_title: 'Riverside Drive Sky Duplex Penthouse',
-                        property_location: 'Riverside, Nairobi',
-                        sale_amount: 920000,
-                        escrow_fee: 13800,
-                        net_payout: 906200,
-                        buyer_name: 'Amina Hassan-Kenyatta',
-                        buyer_phone: '+254 734 602 885',
-                        buyer_account: '028374619203',
-                        wire_reference: 'WIRE-EQB77412098',
-                        status: 'SETTLED & DISBURSED',
-                      },
-                      {
-                        id: 'hist_rcp_3',
-                        receipt_no: 'RCP-2026-07305',
-                        date_settled: 'Aug 19, 2026',
-                        property_title: 'Runda Golf View Colonial Residence',
-                        property_location: 'Runda, Nairobi',
-                        sale_amount: 2100000,
-                        escrow_fee: 31500,
-                        net_payout: 2068500,
-                        buyer_name: 'Sovereign Crest Estates Ltd',
-                        buyer_phone: '+254 709 318 552',
-                        buyer_account: '088392019482',
-                        wire_reference: 'WIRE-SCB55190873',
-                        status: 'SETTLED & DISBURSED',
-                      },
-                    ];
-
-                    const allReceipts = [...dynamicSoldReceipts, ...historicalSoldReceipts];
+                      };
+                    });
 
                     return (
                       <div>
@@ -5227,6 +5188,26 @@ export default function SellerDashboard({
                           </div>
                         </div>
 
+                        {allReceipts.length === 0 ? (
+                          <div
+                            style={{
+                              border: '1px dashed #CBD5E1',
+                              borderRadius: '12px',
+                              padding: '28px 20px',
+                              backgroundColor: '#F8FAFC',
+                              textAlign: 'center',
+                              color: '#64748B',
+                              fontSize: '13.5px',
+                            }}
+                          >
+                            <div style={{ fontWeight: '700', color: '#334155', marginBottom: '4px' }}>
+                              No Past Payment Receipts Yet
+                            </div>
+                            <div>
+                              Payment and escrow settlement receipts will appear here once you start posting your property listings.
+                            </div>
+                          </div>
+                        ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '14px' }}>
                           {allReceipts.map((rcp) => (
                             <div
@@ -5386,6 +5367,7 @@ export default function SellerDashboard({
                             </div>
                           ))}
                         </div>
+                        )}
                       </div>
                     );
                   })()}

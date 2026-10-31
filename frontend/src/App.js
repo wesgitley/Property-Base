@@ -885,6 +885,7 @@ export default function App() {
       return (
         <>
           <SellerDashboard
+            key={authenticatedUser.user_id || authenticatedUser.email}
             user={authenticatedUser}
             token={accessToken}
             onUserUpdate={(updatedUser) => setAuthenticatedUser(updatedUser)}
@@ -919,6 +920,7 @@ export default function App() {
     return (
       <>
         <SellerDashboard
+          key={authenticatedUser.user_id || authenticatedUser.email}
           user={authenticatedUser}
           token={accessToken}
           onUserUpdate={(updatedUser) => setAuthenticatedUser(updatedUser)}
