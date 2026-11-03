@@ -1,3 +1,4 @@
+/* eslint-disable no-unused-vars */
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Building2,
@@ -13,7 +14,6 @@ import {
   ChevronRight,
   ShieldCheck,
   User,
-  Bell,
   Settings,
   LogOut,
   MapPin,
