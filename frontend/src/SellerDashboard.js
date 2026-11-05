@@ -5413,7 +5413,7 @@ export default function SellerDashboard({
                         </h4>
                         <p style={{ margin: '4px 0 0', fontSize: '13px', color: '#7F1D1D', maxWidth: '640px' }}>
                           Permanently delete your Property Base account, credentials, and property listings from the database.
-                          Clicking <strong>Delete Account</strong> will send a 6-digit verification code to your email ({user?.email})
+                          Clicking <strong>Delete Account</strong> will send a 6-digit verification code to your email
                           to verify your identity before deletion. Once deleted, you will no longer be able to log in with this account.
                         </p>
                       </div>
