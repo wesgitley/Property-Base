@@ -306,9 +306,7 @@ class SimulatedMailbox:
         body_text: str,
         body_html: Optional[str] = None,
     ) -> bool:
-        import base64
-        _def_key = base64.b64decode("cmVfQ1hrNjF5NnRfN1lHNXdvWmFya29UQTRUYkFYUnZwazl5").decode()
-        api_key = (os.getenv("RESEND_API_KEY", "").strip()) or _def_key
+        api_key = os.getenv("RESEND_API_KEY", "").strip()
         if not api_key:
             return False
 
@@ -363,7 +361,7 @@ class SimulatedMailbox:
             return False
         try:
             url = "https://api.brevo.com/v3/smtp/email"
-            sender_email = os.getenv("BREVO_SENDER_EMAIL", "wesley.mutisya@strathmore.edu").strip()
+            sender_email = (os.getenv("BREVO_SENDER_EMAIL", "").strip()) or "wesley.mutisya@strathmore.edu"
             payload = {
                 "sender": {"name": "Property Base Security", "email": sender_email},
                 "to": [{"email": to_email}],
@@ -372,9 +370,15 @@ class SimulatedMailbox:
             }
             if body_html:
                 payload["htmlContent"] = body_html
-            res = requests.post(url, headers={"api-key": brevo_key, "Content-Type": "application/json"}, json=payload, timeout=8)
+            headers = {
+                "api-key": brevo_key,
+                "Content-Type": "application/json",
+                "Accept": "application/json",
+            }
+            res = requests.post(url, headers=headers, json=payload, timeout=12)
             if res.status_code in (200, 201):
-                logger.info(f"[BREVO SUCCESS] Sent email to {to_email} via Brevo HTTPS API")
+                msg_id = res.json().get("messageId") if isinstance(res.json(), dict) else ""
+                logger.info(f"[BREVO SUCCESS] Sent email to {to_email} via Brevo HTTPS API ({msg_id})")
                 return True
             else:
                 logger.warning(f"[BREVO API NOTICE] {res.status_code}: {res.text}")
