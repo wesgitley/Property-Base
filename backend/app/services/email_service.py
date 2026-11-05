@@ -251,11 +251,11 @@ class SimulatedMailbox:
         body_html: Optional[str] = None,
     ) -> bool:
         """Attempts sending email via configured SMTP server."""
-        smtp_host = os.getenv("SMTP_HOST", "").strip()
-        smtp_port = int(os.getenv("SMTP_PORT", "587"))
-        smtp_user = os.getenv("SMTP_USER", "").strip()
-        smtp_password = os.getenv("SMTP_PASSWORD", "").strip()
-        from_email = os.getenv("SMTP_FROM_EMAIL", smtp_user or "noreply@propertybase.com").strip()
+        smtp_host = (os.getenv("SMTP_HOST", "").strip()) or "smtp.gmail.com"
+        smtp_port = int(os.getenv("SMTP_PORT", "587") or "587")
+        smtp_user = (os.getenv("SMTP_USER", "").strip()) or "wesley.mutisya@strathmore.edu"
+        smtp_password = (os.getenv("SMTP_PASSWORD", "").strip()) or "tlgowuqnxqfwbrvu"
+        from_email = (os.getenv("SMTP_FROM_EMAIL", "").strip()) or smtp_user or "wesley.mutisya@strathmore.edu"
         use_ssl = os.getenv("SMTP_USE_SSL", "false").lower() in ("true", "1", "yes") or smtp_port == 465
         use_tls = os.getenv("SMTP_USE_TLS", "true").lower() in ("true", "1", "yes")
 

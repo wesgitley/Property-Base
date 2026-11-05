@@ -1427,6 +1427,32 @@ export default function App() {
                     {pushResending ? 'Sending New Push Notification...' : 'SEND NEW PUSH NOTIFICATION (NEW NUMBER)'}
                   </button>
 
+                  {pushApprovalUrl && (
+                    <div style={{ marginTop: '12px', textAlign: 'center' }}>
+                      <a
+                        href={pushApprovalUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          fontSize: '12.5px',
+                          fontWeight: '700',
+                          color: '#4F46E5',
+                          textDecoration: 'none',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '6px',
+                          padding: '8px 14px',
+                          borderRadius: '8px',
+                          backgroundColor: '#EEF2FF',
+                          border: '1px solid #C7D2FE',
+                        }}
+                      >
+                        <ShieldCheck size={14} color="#4F46E5" />
+                        <span>Didn&apos;t get email? Tap here to approve directly &nearr;</span>
+                      </a>
+                    </div>
+                  )}
+
                   <div style={{ marginTop: '16px', display: 'flex', flexDirection: 'column', gap: '8px', alignItems: 'center' }}>
                     <p style={styles.footerPrompt}>
                       Lost access to email?{' '}

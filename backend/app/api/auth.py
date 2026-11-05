@@ -473,6 +473,8 @@ def _tunnel_worker() -> None:
 
 
 def _start_public_tunnel_if_needed() -> None:
+    if os.getenv("RENDER") or os.getenv("RENDER_EXTERNAL_URL"):
+        return
     with _TUNNEL_LOCK:
         if not _TUNNEL_STATE["started"]:
             _TUNNEL_STATE["started"] = True
@@ -485,13 +487,20 @@ def _get_public_backend_base_url() -> str:
     if env_url and "localhost" not in env_url and "127.0.0.1" not in env_url:
         return env_url
 
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if render_url:
+        return render_url
+
+    if os.getenv("RENDER"):
+        return "https://property-base-qvpg.onrender.com"
+
     _start_public_tunnel_if_needed()
-    for _ in range(30):
+    for _ in range(15):
         if _TUNNEL_STATE.get("url"):
             return _TUNNEL_STATE["url"]
         time.sleep(0.2)
 
-    return env_url or "http://192.168.0.13:8000"
+    return "https://property-base-qvpg.onrender.com"
 
 
 # Start tunnel proactively on module import
