@@ -4,6 +4,7 @@ import os
 import secrets
 import smtplib
 import string
+import requests
 from datetime import datetime, timezone
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
@@ -442,6 +443,7 @@ class SimulatedMailbox:
                 body_html=body_html,
             )
 
+        smtp_success = delivery_success
         email_record = {
             "id": secrets.token_hex(6),
             "to": to_email,
